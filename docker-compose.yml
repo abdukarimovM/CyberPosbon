@@ -1,0 +1,33 @@
+version: "3.9"
+
+services:
+  postgres:
+    image: postgres:17
+    container_name: cyberposbon-postgres
+    restart: unless-stopped
+
+    environment:
+      POSTGRES_USER: cyberposbon
+      POSTGRES_PASSWORD: cyberposbon
+      POSTGRES_DB: cyberposbon
+
+    ports:
+      - "5433:5432"
+
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+
+  redis:
+    image: redis:8-alpine
+    container_name: cyberposbon-redis
+    restart: unless-stopped
+
+    ports:
+      - "6379:6379"
+
+    volumes:
+      - redis_data:/data
+
+volumes:
+  postgres_data:
+  redis_data:
