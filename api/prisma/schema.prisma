@@ -11,13 +11,13 @@ generator client {
   provider = "prisma-client-js"
 }
 model User {
-  id         String   @id @default(cuid())
-  telegramId BigInt   @unique
-  username   String?
-  firstName  String?
-  lastName   String?
-  language   String?  @default("uz")
+  id          String   @id @default(cuid())
+  telegramId  BigInt   @unique
+  username    String?
+  displayName String?
+  phoneNumber String?
+  language    String?  @default("uz")
 
-  createdAt  DateTime @default(now())
-  updatedAt  DateTime @updatedAt
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
 }
