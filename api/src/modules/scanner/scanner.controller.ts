@@ -6,14 +6,57 @@ import {
 
 import { GoogleSafeBrowsingScanner } from './providers/google-safe-browsing.scanner';
 import { UrlhausScanner } from './providers/urlhaus.scanner';
+import { RiskEngineService } from './risk/risk-engine.service';
+import { ScannerService } from './scanner.service';
 
 @Controller('scanner')
 export class ScannerController {
   constructor(
     private readonly googleScanner: GoogleSafeBrowsingScanner,
     private readonly urlhausScanner: UrlhausScanner,
+    private readonly scannerService: ScannerService,
+    private readonly riskEngine: RiskEngineService,
   ) {}
 
+  @Post('check')
+  async check(
+    @Body() body: { url: string },
+  ) {
+    const results =
+      await this.scannerService.scanUrl(
+        body.url,
+        [
+          this.googleScanner,
+          this.urlhausScanner,
+        ],
+      );
+
+    const status =
+      this.riskEngine.analyze(results);
+
+    const score =
+      this.riskEngine.calculateScore(
+        results,
+      );
+
+    const riskLevel =
+      this.riskEngine.getRiskLevel(score);
+
+    return {
+      url: body.url,
+
+      status,
+
+      risk: {
+        score,
+        level: riskLevel,
+      },
+
+      results,
+    };
+  }
+
+  // Eski test endpointlari.
   @Post('google')
   async googleScan(
     @Body() body: { url: string },
