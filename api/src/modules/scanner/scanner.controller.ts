@@ -8,15 +8,19 @@ import { GoogleSafeBrowsingScanner } from './providers/google-safe-browsing.scan
 import { UrlhausScanner } from './providers/urlhaus.scanner';
 import { RiskEngineService } from './risk/risk-engine.service';
 import { ScannerService } from './scanner.service';
+import { VirusTotalScanner } from './providers/virustotal.scanner';
+import { UrlscanScanner } from './providers/urlscan.scanner';
 
 @Controller('scanner')
 export class ScannerController {
   constructor(
-    private readonly googleScanner: GoogleSafeBrowsingScanner,
-    private readonly urlhausScanner: UrlhausScanner,
-    private readonly scannerService: ScannerService,
-    private readonly riskEngine: RiskEngineService,
-  ) {}
+  private readonly googleScanner: GoogleSafeBrowsingScanner,
+  private readonly urlhausScanner: UrlhausScanner,
+  private readonly virusTotalScanner: VirusTotalScanner,
+  private readonly urlscanScanner: UrlscanScanner,
+  private readonly scannerService: ScannerService,
+  private readonly riskEngine: RiskEngineService,
+) {}
 
   @Post('check')
   async check(
@@ -28,6 +32,7 @@ export class ScannerController {
         [
           this.googleScanner,
           this.urlhausScanner,
+          this.virusTotalScanner,
         ],
       );
 

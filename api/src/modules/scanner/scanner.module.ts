@@ -5,6 +5,8 @@ import { ScannerService } from './scanner.service';
 
 import { GoogleSafeBrowsingScanner } from './providers/google-safe-browsing.scanner';
 import { UrlhausScanner } from './providers/urlhaus.scanner';
+import { VirusTotalScanner } from './providers/virustotal.scanner';
+import { UrlscanScanner } from './providers/urlscan.scanner';
 
 import { RiskEngineService } from './risk/risk-engine.service';
 
@@ -18,6 +20,8 @@ import { RiskEngineService } from './risk/risk-engine.service';
     GoogleSafeBrowsingScanner,
     UrlhausScanner,
     RiskEngineService,
+    VirusTotalScanner,
+    UrlscanScanner,
   ],
 
   exports: [
