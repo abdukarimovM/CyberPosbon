@@ -147,4 +147,84 @@ export class UrlscanScanner {
       };
     }
   }
+
+  async submitScan(
+  url: string,
+): Promise<ScannerResult> {
+  if (!this.apiKey) {
+    return {
+      provider: 'urlscan',
+      status: 'unknown',
+      message:
+        'URLSCAN_API_KEY sozlanmagan.',
+    };
+  }
+
+  try {
+    const response = await fetch(
+      `${this.apiUrl}/scan`,
+      {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'API-Key': this.apiKey,
+        },
+        body: JSON.stringify({
+          url,
+          visibility: 'private',
+        }),
+      },
+    );
+
+    const responseText =
+      await response.text();
+
+    console.log(
+      'URLScan submit HTTP status:',
+      response.status,
+    );
+
+    if (!response.ok) {
+      console.error(
+        'URLScan submit response:',
+        responseText,
+      );
+
+      return {
+        provider: 'urlscan',
+        status: 'unknown',
+        message:
+          `URLScan scan yuborishda xatolik: HTTP ${response.status}`,
+        raw: responseText,
+      };
+    }
+
+    const data =
+      JSON.parse(responseText);
+
+    return {
+      provider: 'urlscan',
+      status: 'unknown',
+      message:
+        'URLScan chuqur tahlili boshlandi.',
+      raw: data,
+    };
+  } catch (error: any) {
+    console.error(
+      'URLScan submit error:',
+      error?.message || error,
+    );
+
+    return {
+      provider: 'urlscan',
+      status: 'unknown',
+      message:
+        'URLScan scan yuborishda xatolik yuz berdi.',
+      raw:
+        error?.message || error,
+    };
+  }
+}
+
+
 }

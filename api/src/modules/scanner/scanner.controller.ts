@@ -75,4 +75,21 @@ export class ScannerController {
   ) {
     return this.urlhausScanner.scan(body.url);
   }
+
+  @Post('urlscan-search')
+async urlscanSearch(
+  @Body() body: { url: string },
+) {
+  return this.urlscanScanner.search(body.url);
+}
+
+@Post('urlscan-submit')
+async urlscanSubmit(
+  @Body() body: { url: string },
+) {
+  return this.urlscanScanner.submitScan(
+    body.url,
+  );
+}
+
 }
