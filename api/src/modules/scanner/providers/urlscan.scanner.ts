@@ -227,4 +227,125 @@ export class UrlscanScanner {
 }
 
 
+async getResult(
+  resultUrl: string,
+): Promise<ScannerResult> {
+  if (!this.apiKey) {
+    return {
+      provider: 'urlscan',
+      status: 'unknown',
+      message: 'URLSCAN_API_KEY sozlanmagan.',
+    };
+  }
+
+  try {
+    const response = await fetch(
+      resultUrl,
+      {
+        method: 'GET',
+        headers: {
+          'API-Key': this.apiKey,
+          Accept: 'application/json',
+        },
+      },
+    );
+
+    const responseText =
+      await response.text();
+
+    console.log(
+      'URLScan result HTTP status:',
+      response.status,
+    );
+
+    // Scan hali tayyor emas
+    if (response.status === 404) {
+      return {
+        provider: 'urlscan',
+        status: 'unknown',
+        message:
+          'URLScan tahlili hali tugamagan.',
+        raw: {
+          pending: true,
+        },
+      };
+    }
+
+    if (!response.ok) {
+      console.error(
+        'URLScan result response:',
+        responseText,
+      );
+
+      return {
+        provider: 'urlscan',
+        status: 'unknown',
+        message:
+          `URLScan result xatosi: HTTP ${response.status}`,
+        raw: responseText,
+      };
+    }
+
+    const data =
+      JSON.parse(responseText);
+
+    /*
+     * URLScan umumiy verdicti.
+     */
+    const overall =
+      data?.verdicts?.overall;
+
+    const malicious =
+      overall?.malicious === true;
+
+    const score =
+      overall?.score;
+
+    if (malicious) {
+      return {
+        provider: 'urlscan',
+        status: 'dangerous',
+        message:
+          'URLScan ushbu manbani zararli deb aniqladi.',
+        raw: data,
+      };
+    }
+
+    if (
+      typeof score === 'number' &&
+      score > 0
+    ) {
+      return {
+        provider: 'urlscan',
+        status: 'suspicious',
+        message:
+          `URLScan risk score: ${score}.`,
+        raw: data,
+      };
+    }
+
+    return {
+      provider: 'urlscan',
+      status: 'safe',
+      message:
+        'URLScan tahlilida aniq zararli faoliyat topilmadi.',
+      raw: data,
+    };
+  } catch (error: any) {
+    console.error(
+      'URLScan result error:',
+      error?.message || error,
+    );
+
+    return {
+      provider: 'urlscan',
+      status: 'unknown',
+      message:
+        'URLScan natijasini olishda xatolik yuz berdi.',
+      raw:
+        error?.message || error,
+    };
+  }
+}
+
 }

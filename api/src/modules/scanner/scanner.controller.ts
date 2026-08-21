@@ -92,4 +92,13 @@ async urlscanSubmit(
   );
 }
 
+@Post('urlscan-result')
+async urlscanResult(
+  @Body() body: { resultUrl: string },
+) {
+  return this.urlscanScanner.getResult(
+    body.resultUrl,
+  );
+}
+
 }
