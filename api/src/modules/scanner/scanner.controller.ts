@@ -23,43 +23,56 @@ export class ScannerController {
 ) {}
 
   @Post('check')
-  async check(
-    @Body() body: { url: string },
-  ) {
-    const results =
-      await this.scannerService.scanUrl(
-        body.url,
-        [
-          this.googleScanner,
-          this.urlhausScanner,
-          this.virusTotalScanner,
-        ],
-      );
+async check(
+  @Body() body: { url: string },
+) {
+  // ⚡ Tezkor scannerlar
+  const results =
+    await this.scannerService.scanUrl(
+      body.url,
+      [
+        this.googleScanner,
+        this.urlhausScanner,
+        this.virusTotalScanner,
+      ],
+    );
 
-    const status =
-      this.riskEngine.analyze(results);
+  // 🧠 Risk Engine
+  const status =
+    this.riskEngine.analyze(results);
 
-    const score =
-      this.riskEngine.calculateScore(
-        results,
-      );
-
-    const riskLevel =
-      this.riskEngine.getRiskLevel(score);
-
-    return {
-      url: body.url,
-
-      status,
-
-      risk: {
-        score,
-        level: riskLevel,
-      },
-
+  const score =
+    this.riskEngine.calculateScore(
       results,
-    };
-  }
+    );
+
+  const riskLevel =
+    this.riskEngine.getRiskLevel(score);
+
+  // 🔬 URLScan background
+  void this.scannerService
+    .startUrlscanBackground(body.url);
+
+  // ⚡ Darhol javob
+  return {
+    url: body.url,
+
+    status,
+
+    risk: {
+      score,
+      level: riskLevel,
+    },
+
+    results,
+
+    urlscan: {
+      status: 'background',
+      message:
+        'URLScan chuqur tahlili orqa fonda davom etmoqda.',
+    },
+  };
+}
 
   // Eski test endpointlari.
   @Post('google')
@@ -97,6 +110,26 @@ async urlscanResult(
   @Body() body: { resultUrl: string },
 ) {
   return this.urlscanScanner.getResult(
+    body.resultUrl,
+  );
+}
+
+@Post('urlscan-smart')
+async urlscanSmart(
+  @Body() body: { url: string },
+) {
+  return this.urlscanScanner.smartScan(
+    body.url,
+  );
+}
+
+@Post('urlscan-poll')
+async urlscanPoll(
+  @Body() body: {
+    resultUrl: string;
+  },
+) {
+  return this.urlscanScanner.pollResult(
     body.resultUrl,
   );
 }

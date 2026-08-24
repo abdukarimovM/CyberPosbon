@@ -7,7 +7,7 @@ import {
 @Injectable()
 export class RiskEngineService {
   /**
-   * Scanner natijalaridan umumiy xavf darajasini aniqlaydi.
+   * Scanner natijalaridan umumiy xavf holatini aniqlaydi.
    *
    * Qoidalar:
    *
@@ -17,21 +17,19 @@ export class RiskEngineService {
    * 🟡 Dangerous bo'lmasa, bittasi suspicious desa
    *    → suspicious
    *
-   * 🟢 Kamida bitta scanner bo'lsa va
-   *    barcha mavjud natijalar safe bo'lsa
+   * ⚪ Bitta scanner unknown bo'lsa
+   *    → unknown
+   *
+   * 🟢 FAQAT barcha scannerlar safe bo'lsa
    *    → safe
    *
-   * ⚪ Yetarli ma'lumot bo'lmasa
+   * ⚪ Natijalar bo'lmasa
    *    → unknown
    */
   analyze(
     results: ScannerResult[],
   ): ScannerResult['status'] {
-    if (results.length === 0) {
-      return 'unknown';
-    }
-
-    // 🔴 1. Kuchli xavf
+    // 1. Bitta scanner dangerous desa
     if (
       results.some(
         (result) =>
@@ -41,7 +39,7 @@ export class RiskEngineService {
       return 'dangerous';
     }
 
-    // 🟡 2. Shubhali
+    // 2. Bitta scanner suspicious desa
     if (
       results.some(
         (result) =>
@@ -51,47 +49,41 @@ export class RiskEngineService {
       return 'suspicious';
     }
 
-    /*
-     * ⚪ Unknown / no_data natijalar
-     * xavfli deb hisoblanmaydi.
-     *
-     * Masalan:
-     * Google      → safe
-     * URLhaus     → unknown
-     * VirusTotal  → safe
-     *
-     * Bu holat SAFE bo'lishi mumkin.
-     */
-    const knownResults =
-      results.filter(
+    // 3. Bitta scanner unknown bo'lsa,
+    // hali URL'ni to'liq safe deb aytmaymiz.
+    if (
+      results.some(
+        (result) =>
+          result.status === 'unknown',
+      )
+    ) {
+      return 'unknown';
+    }
+
+    // 4. FAQAT barcha scannerlar safe bo'lsa
+    if (
+      results.length > 0 &&
+      results.every(
         (result) =>
           result.status === 'safe',
-      );
-
-    if (
-      knownResults.length > 0 &&
-      knownResults.length ===
-        results.filter(
-          (result) =>
-            result.status === 'safe' ||
-            result.status === 'unknown',
-        ).length
+      )
     ) {
       return 'safe';
     }
 
+    // 5. Qolgan holatlar
     return 'unknown';
   }
 
   /**
-   * Risk score.
+   * Umumiy risk score.
    *
-   * dangerous  → +70
-   * suspicious → +40
-   * safe       → +0
-   * unknown    → +0
+   * 🔴 dangerous  → +70
+   * 🟡 suspicious → +40
+   * ⚪ unknown    → +10
+   * 🟢 safe       → +0
    *
-   * Unknown xavf ballini oshirmaydi.
+   * Maksimum score = 100.
    */
   calculateScore(
     results: ScannerResult[],
@@ -99,39 +91,54 @@ export class RiskEngineService {
     let score = 0;
 
     for (const result of results) {
-      if (
-        result.status === 'dangerous'
-      ) {
-        score += 70;
-      }
+      switch (result.status) {
+        case 'dangerous':
+          score += 70;
+          break;
 
-      if (
-        result.status === 'suspicious'
-      ) {
-        score += 40;
-      }
+        case 'suspicious':
+          score += 40;
+          break;
 
-      // safe → 0
-      // unknown → 0
+        case 'unknown':
+          score += 10;
+          break;
+
+        case 'safe':
+          score += 0;
+          break;
+
+        default:
+          score += 10;
+          break;
+      }
     }
 
     return Math.min(score, 100);
   }
 
   /**
-   * Score asosida umumiy risk darajasi.
+   * Score asosida risk darajasini aniqlaydi.
+   *
+   * 0–20   → safe
+   * 21–60  → suspicious
+   * 61–100 → dangerous
    */
   getRiskLevel(
-    score: number,
-  ): 'safe' | 'suspicious' | 'dangerous' {
-    if (score >= 61) {
-      return 'dangerous';
-    }
-
-    if (score >= 21) {
-      return 'suspicious';
-    }
-
-    return 'safe';
+  score: number,
+): 'safe' | 'suspicious' | 'dangerous' | 'unknown' {
+  if (score >= 61) {
+    return 'dangerous';
   }
+
+  if (score >= 21) {
+    return 'suspicious';
+  }
+
+  if (score > 0) {
+    return 'unknown';
+  }
+
+  return 'safe';
+}
 }

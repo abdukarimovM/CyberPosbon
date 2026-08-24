@@ -348,4 +348,130 @@ async getResult(
   }
 }
 
+async smartScan(
+  url: string,
+): Promise<ScannerResult> {
+  // 1. Avval URLScan bazasidan qidiramiz
+  const searchResult = await this.search(url);
+
+  // Oldingi scan topilgan bo‘lsa — darhol qaytaramiz
+  if (
+    searchResult.status === 'safe' ||
+    searchResult.status === 'suspicious' ||
+    searchResult.status === 'dangerous'
+  ) {
+    return {
+      ...searchResult,
+      message:
+        'URLScan bazasidan oldingi scan natijasi olindi.',
+    };
+  }
+
+  // 2. Oldingi scan topilmadi — yangi scan boshlaymiz
+  const submitResult =
+    await this.submitScan(url);
+
+  // Submit xato bergan bo‘lsa
+  if (
+    !submitResult.raw ||
+    typeof submitResult.raw !== 'object'
+  ) {
+    return {
+      provider: 'urlscan',
+      status: 'unknown',
+      message:
+        'URLScan scan boshlandi, lekin natija maʼlumotlari olinmadi.',
+      raw: submitResult.raw,
+    };
+  }
+
+  // URLScan submit javobini xavfsiz type qilamiz
+  const raw = submitResult.raw as {
+    api?: string;
+    uuid?: string;
+    visibility?: string;
+    result?: string;
+  };
+
+  // URLScan result API manzili
+  const resultUrl =
+    raw.api ??
+    raw.result;
+
+  // Result URL olinmagan bo‘lsa
+  if (!resultUrl) {
+    return {
+      provider: 'urlscan',
+      status: 'unknown',
+      message:
+        'URLScan scan boshlandi, lekin result URL olinmadi.',
+      raw: submitResult.raw,
+    };
+  }
+
+  // 3. Foydalanuvchini kutdirmaymiz
+  return {
+    provider: 'urlscan',
+    status: 'unknown',
+    message:
+      'URLScan yangi deep scan boshladi. Natija keyinroq olinadi.',
+    raw: {
+      pending: true,
+      resultUrl,
+      uuid: raw.uuid ?? null,
+      visibility:
+        raw.visibility ?? null,
+    },
+  };
+}
+
+async pollResult(
+  resultUrl: string,
+  maxAttempts = 5,
+  delayMs = 2000,
+): Promise<ScannerResult> {
+  for (
+    let attempt = 1;
+    attempt <= maxAttempts;
+    attempt++
+  ) {
+    console.log(
+      `URLScan polling: ${attempt}/${maxAttempts}`,
+    );
+
+    const result =
+      await this.getResult(resultUrl);
+
+    // Natija tayyor bo‘ldi
+    if (
+      result.raw &&
+      typeof result.raw === 'object' &&
+      (result.raw as any).pending !== true
+    ) {
+      return result;
+    }
+
+    // Oxirgi urinish bo‘lsa kutmaymiz
+    if (attempt === maxAttempts) {
+      break;
+    }
+
+    // Keyingi tekshiruvgacha kutamiz
+    await new Promise((resolve) =>
+      setTimeout(resolve, delayMs),
+    );
+  }
+
+  return {
+    provider: 'urlscan',
+    status: 'unknown',
+    message:
+      'URLScan tahlili hali tugamadi. Keyinroq qayta tekshirish mumkin.',
+    raw: {
+      pending: true,
+      resultUrl,
+    },
+  };
+}
+
 }
