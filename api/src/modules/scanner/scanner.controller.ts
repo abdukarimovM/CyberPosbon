@@ -46,12 +46,18 @@ async check(
       results,
     );
 
-  const riskLevel =
-    this.riskEngine.getRiskLevel(score);
+ const riskLevel =
+  this.scannerService.getRiskLevel(
+    score,
+    status,
+  );
 
   // 🔬 URLScan background
   void this.scannerService
-    .startUrlscanBackground(body.url);
+  .startUrlscanBackground(
+    body.url,
+    results,
+  );
 
   // ⚡ Darhol javob
   return {

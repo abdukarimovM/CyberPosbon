@@ -72,16 +72,22 @@ export class ScannerService {
  *
  * Foydalanuvchi URLScan tugashini kutmaydi.
  */
+/**
+ * URLScan'ni background rejimida ishlatadi.
+ *
+ * Foydalanuvchi URLScan tugashini kutmaydi.
+ */
 async startUrlscanBackground(
   url: string,
-): Promise<void> {
+  results: ScannerResult[],
+): Promise<ScannerResult | null> {
   try {
     console.log(
       '🔬 URLScan background scan boshlandi:',
       url,
     );
 
-    // 1. Search yoki Submit
+    // 1. Avval Search, topilmasa Submit
     const smartResult =
       await this.urlscanScanner.smartScan(url);
 
@@ -91,59 +97,160 @@ async startUrlscanBackground(
     );
 
     /*
-     * Agar Search orqali tayyor natija topilgan bo‘lsa,
-     * polling kerak emas.
+     * 2. Agar tayyor natija bo‘lsa
+     * final Risk'ni darhol hisoblaymiz.
      */
     if (
-      !smartResult.raw ||
-      typeof smartResult.raw !== 'object'
+      smartResult.status === 'safe' ||
+      smartResult.status === 'suspicious' ||
+      smartResult.status === 'dangerous'
     ) {
-      return;
-    }
-
-    const raw =
-      smartResult.raw as {
-        pending?: boolean;
-        resultUrl?: string;
-      };
-
-    /*
-     * Yangi scan boshlangan bo‘lsa,
-     * background polling boshlaymiz.
-     */
-    if (
-      raw.pending === true &&
-      raw.resultUrl
-    ) {
-      console.log(
-        '⏳ URLScan polling boshlandi:',
-        raw.resultUrl,
-      );
-
-      const finalResult =
-        await this.urlscanScanner.pollResult(
-          raw.resultUrl,
+      const finalRisk =
+        this.calculateFinalRisk(
+          results,
+          smartResult,
         );
 
       console.log(
-        '✅ URLScan background natijasi:',
-        finalResult.status,
-        finalResult.message,
+        '🧠 FINAL RISK:',
+        finalRisk,
       );
 
-      return;
+      return {
+        ...smartResult,
+        raw: {
+          ...(typeof smartResult.raw === 'object' &&
+          smartResult.raw !== null
+            ? smartResult.raw
+            : {}),
+          finalRisk,
+        },
+      };
     }
 
+    /*
+     * 3. Yangi scan boshlangan bo‘lsa
+     * background polling qilamiz.
+     */
+    if (
+      smartResult.raw &&
+      typeof smartResult.raw === 'object'
+    ) {
+      const raw =
+        smartResult.raw as {
+          pending?: boolean;
+          resultUrl?: string;
+        };
+
+      if (
+        raw.pending === true &&
+        raw.resultUrl
+      ) {
+        console.log(
+          '⏳ URLScan polling boshlandi:',
+          raw.resultUrl,
+        );
+
+        const finalResult =
+          await this.urlscanScanner.pollResult(
+            raw.resultUrl,
+          );
+
+        console.log(
+          '✅ URLScan background natijasi:',
+          finalResult.status,
+          finalResult.message,
+        );
+
+        /*
+         * 4. URLScan final natijasini
+         * boshqa scannerlarga qo‘shamiz.
+         */
+        const finalRisk =
+          this.calculateFinalRisk(
+            results,
+            finalResult,
+          );
+
+        console.log(
+          '🧠 FINAL RISK:',
+          finalRisk,
+        );
+
+        /*
+         * ScannerResult formatini saqlaymiz,
+         * lekin finalRisk'ni raw ichida ham qaytaramiz.
+         */
+        return {
+          ...finalResult,
+          raw: {
+            ...(typeof finalResult.raw === 'object' &&
+            finalResult.raw !== null
+              ? finalResult.raw
+              : {}),
+            finalRisk,
+          },
+        };
+      }
+    }
+
+    /*
+     * 5. Kutilmagan holat
+     */
     console.log(
-      '✅ URLScan tayyor natija berdi:',
+      '⚪ URLScan natijasi hozircha tayyor emas:',
       smartResult.status,
     );
+
+    return smartResult;
+
   } catch (error) {
     console.error(
       '❌ URLScan background error:',
       error,
     );
+
+    return null;
   }
+}
+/**
+ * Tezkor scanner natijalariga
+ * URLScan final natijasini qo‘shib,
+ * yakuniy riskni hisoblaydi.
+ */
+calculateFinalRisk(
+  results: ScannerResult[],
+  urlscanResult: ScannerResult,
+) {
+  const allResults = [
+    ...results,
+    urlscanResult,
+  ];
+
+  const status =
+  this.riskEngine.analyze(
+    allResults,
+  );
+
+const score =
+  this.riskEngine.calculateScore(
+    allResults,
+  );
+
+const level =
+  this.riskEngine.getRiskLevel(
+    score,
+    status,
+  );
+
+return {
+  status,
+  risk: {
+    score,
+    level,
+  },
+  results: allResults,
+};
 }
 
   /**
@@ -157,14 +264,17 @@ async startUrlscanBackground(
     );
   }
 
-  /**
- * Score asosida risk darajasini aniqlaydi.
+ /**
+ * Score va umumiy status asosida
+ * yakuniy risk darajasini aniqlaydi.
  */
 getRiskLevel(
   score: number,
+  status: ScannerResult['status'],
 ): 'safe' | 'suspicious' | 'dangerous' | 'unknown' {
   return this.riskEngine.getRiskLevel(
     score,
+    status,
   );
 }
 }

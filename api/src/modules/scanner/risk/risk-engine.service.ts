@@ -116,29 +116,32 @@ export class RiskEngineService {
 
     return Math.min(score, 100);
   }
-
-  /**
-   * Score asosida risk darajasini aniqlaydi.
-   *
-   * 0–20   → safe
-   * 21–60  → suspicious
-   * 61–100 → dangerous
-   */
-  getRiskLevel(
+/**
+ * Umumiy status asosida yakuniy risk darajasini aniqlaydi.
+ *
+ * Yakuniy level doimo umumiy statusga mos keladi.
+ */
+getRiskLevel(
   score: number,
+  status: ScannerResult['status'],
 ): 'safe' | 'suspicious' | 'dangerous' | 'unknown' {
-  if (score >= 61) {
-    return 'dangerous';
-  }
 
-  if (score >= 21) {
-    return 'suspicious';
-  }
+  switch (status) {
+    case 'dangerous':
+      return 'dangerous';
 
-  if (score > 0) {
-    return 'unknown';
-  }
+    case 'suspicious':
+      return 'suspicious';
 
-  return 'safe';
+    case 'unknown':
+      return 'unknown';
+
+    case 'safe':
+      return 'safe';
+
+    default:
+      return 'unknown';
+  }
 }
+
 }
