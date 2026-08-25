@@ -67,27 +67,23 @@ export class ScannerService {
     );
   }
 
-  /**
- * URLScan'ni background rejimida ishlatadi.
+ /**
+ * URLScan chuqur tahlilini BOSHLAYDI.
  *
- * Foydalanuvchi URLScan tugashini kutmaydi.
+ * Muhim:
+ * - URLScan natijasini kutib turmaydi.
+ * - Polling qilmaydi.
+ * - Faqat scan boshlanganini va resultUrl'ni qaytaradi.
  */
-/**
- * URLScan'ni background rejimida ishlatadi.
- *
- * Foydalanuvchi URLScan tugashini kutmaydi.
- */
-async startUrlscanBackground(
+async startUrlscanDeep(
   url: string,
-  results: ScannerResult[],
-): Promise<ScannerResult | null> {
+): Promise<ScannerResult> {
   try {
     console.log(
-      '🔬 URLScan background scan boshlandi:',
+      '🔬 URLScan deep scan boshlandi:',
       url,
     );
 
-    // 1. Avval Search, topilmasa Submit
     const smartResult =
       await this.urlscanScanner.smartScan(url);
 
@@ -96,121 +92,26 @@ async startUrlscanBackground(
       smartResult.message,
     );
 
-    /*
-     * 2. Agar tayyor natija bo‘lsa
-     * final Risk'ni darhol hisoblaymiz.
-     */
-    if (
-      smartResult.status === 'safe' ||
-      smartResult.status === 'suspicious' ||
-      smartResult.status === 'dangerous'
-    ) {
-      const finalRisk =
-        this.calculateFinalRisk(
-          results,
-          smartResult,
-        );
-
-      console.log(
-        '🧠 FINAL RISK:',
-        finalRisk,
-      );
-
-      return {
-        ...smartResult,
-        raw: {
-          ...(typeof smartResult.raw === 'object' &&
-          smartResult.raw !== null
-            ? smartResult.raw
-            : {}),
-          finalRisk,
-        },
-      };
-    }
-
-    /*
-     * 3. Yangi scan boshlangan bo‘lsa
-     * background polling qilamiz.
-     */
-    if (
-      smartResult.raw &&
-      typeof smartResult.raw === 'object'
-    ) {
-      const raw =
-        smartResult.raw as {
-          pending?: boolean;
-          resultUrl?: string;
-        };
-
-      if (
-        raw.pending === true &&
-        raw.resultUrl
-      ) {
-        console.log(
-          '⏳ URLScan polling boshlandi:',
-          raw.resultUrl,
-        );
-
-        const finalResult =
-          await this.urlscanScanner.pollResult(
-            raw.resultUrl,
-          );
-
-        console.log(
-          '✅ URLScan background natijasi:',
-          finalResult.status,
-          finalResult.message,
-        );
-
-        /*
-         * 4. URLScan final natijasini
-         * boshqa scannerlarga qo‘shamiz.
-         */
-        const finalRisk =
-          this.calculateFinalRisk(
-            results,
-            finalResult,
-          );
-
-        console.log(
-          '🧠 FINAL RISK:',
-          finalRisk,
-        );
-
-        /*
-         * ScannerResult formatini saqlaymiz,
-         * lekin finalRisk'ni raw ichida ham qaytaramiz.
-         */
-        return {
-          ...finalResult,
-          raw: {
-            ...(typeof finalResult.raw === 'object' &&
-            finalResult.raw !== null
-              ? finalResult.raw
-              : {}),
-            finalRisk,
-          },
-        };
-      }
-    }
-
-    /*
-     * 5. Kutilmagan holat
-     */
-    console.log(
-      '⚪ URLScan natijasi hozircha tayyor emas:',
-      smartResult.status,
-    );
-
     return smartResult;
 
   } catch (error) {
     console.error(
-      '❌ URLScan background error:',
+      '❌ URLScan deep scan error:',
       error,
     );
 
-    return null;
+    return {
+      provider: 'urlscan',
+      status: 'unknown',
+      message:
+        'Chuqur tahlilni boshlashda xatolik yuz berdi.',
+      raw: {
+        error:
+          error instanceof Error
+            ? error.message
+            : String(error),
+      },
+    };
   }
 }
 /**
@@ -251,6 +152,95 @@ return {
   },
   results: allResults,
 };
+}
+
+/**
+ * URLScan chuqur tahlili natijasini oladi.
+ *
+ * Bu metod faqat foydalanuvchi
+ * "Natijani tekshirish" tugmasini bosganda ishlaydi.
+ */
+async pollUrlscanDeep(
+  resultUrl: string,
+  results: ScannerResult[] = [],
+): Promise<{
+  result: ScannerResult;
+  finalRisk: {
+    status: ScannerResult['status'];
+    risk: {
+      score: number;
+      level:
+        | 'safe'
+        | 'suspicious'
+        | 'dangerous'
+        | 'unknown';
+    };
+    results: ScannerResult[];
+  };
+}> {
+  try {
+    console.log(
+      '🔄 URLScan deep result tekshirilmoqda:',
+      resultUrl,
+    );
+
+    const urlscanResult =
+      await this.urlscanScanner.pollResult(
+        resultUrl,
+      );
+
+    console.log(
+      '✅ URLScan result:',
+      urlscanResult.status,
+      urlscanResult.message,
+    );
+
+    const finalRisk =
+      this.calculateFinalRisk(
+        results,
+        urlscanResult,
+      );
+
+    console.log(
+      '🧠 FINAL RISK:',
+      finalRisk,
+    );
+
+    return {
+      result: urlscanResult,
+      finalRisk,
+    };
+
+  } catch (error) {
+    console.error(
+      '❌ URLScan deep polling error:',
+      error,
+    );
+
+    const errorResult: ScannerResult = {
+      provider: 'urlscan',
+      status: 'unknown',
+      message:
+        'URLScan natijasini olishda xatolik yuz berdi.',
+      raw: {
+        error:
+          error instanceof Error
+            ? error.message
+            : String(error),
+      },
+    };
+
+    const finalRisk =
+      this.calculateFinalRisk(
+        results,
+        errorResult,
+      );
+
+    return {
+      result: errorResult,
+      finalRisk,
+    };
+  }
 }
 
   /**

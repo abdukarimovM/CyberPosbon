@@ -10,6 +10,9 @@ import { RiskEngineService } from './risk/risk-engine.service';
 import { ScannerService } from './scanner.service';
 import { VirusTotalScanner } from './providers/virustotal.scanner';
 import { UrlscanScanner } from './providers/urlscan.scanner';
+import {
+  ScannerResult,
+} from './interfaces/scanner-result.interface';
 
 @Controller('scanner')
 export class ScannerController {
@@ -26,7 +29,6 @@ export class ScannerController {
 async check(
   @Body() body: { url: string },
 ) {
-  // ⚡ Tezkor scannerlar
   const results =
     await this.scannerService.scanUrl(
       body.url,
@@ -37,29 +39,18 @@ async check(
       ],
     );
 
-  // 🧠 Risk Engine
   const status =
     this.riskEngine.analyze(results);
 
   const score =
-    this.riskEngine.calculateScore(
-      results,
+    this.riskEngine.calculateScore(results);
+
+  const riskLevel =
+    this.scannerService.getRiskLevel(
+      score,
+      status,
     );
 
- const riskLevel =
-  this.scannerService.getRiskLevel(
-    score,
-    status,
-  );
-
-  // 🔬 URLScan background
-  void this.scannerService
-  .startUrlscanBackground(
-    body.url,
-    results,
-  );
-
-  // ⚡ Darhol javob
   return {
     url: body.url,
 
@@ -71,14 +62,83 @@ async check(
     },
 
     results,
+  };
+}
 
-    urlscan: {
-      status: 'background',
-      message:
-        'URLScan chuqur tahlili orqa fonda davom etmoqda.',
+@Post('deep-scan')
+async deepScan(
+  @Body()
+  body: {
+    url: string;
+    results?: ScannerResult[];
+  },
+) {
+  const result =
+    await this.scannerService.startUrlscanDeep(
+      body.url,
+    );
+
+  const raw =
+    result.raw &&
+    typeof result.raw === 'object'
+      ? result.raw as {
+          pending?: boolean;
+          resultUrl?: string;
+        }
+      : null;
+
+  return {
+    url: body.url,
+
+    status: result.status,
+
+    message: result.message,
+
+    result,
+
+    deepScan: {
+      started:
+        result.status === 'unknown' &&
+        raw?.pending === true,
+
+      pending:
+        raw?.pending === true,
+
+      resultUrl:
+        raw?.resultUrl ?? null,
     },
   };
 }
+
+@Post('deep-poll')
+async deepPoll(
+  @Body()
+  body: {
+    resultUrl: string;
+    results?: ScannerResult[];
+  },
+) {
+  if (!body.resultUrl) {
+    return {
+      status: 'unknown',
+      message:
+        'URLScan resultUrl berilmagan.',
+    };
+  }
+
+  const result =
+    await this.scannerService.pollUrlscanDeep(
+      body.resultUrl,
+      body.results ?? [],
+    );
+
+  return {
+    result: result.result,
+    finalRisk: result.finalRisk,
+  };
+}
+
+
 
   // Eski test endpointlari.
   @Post('google')
