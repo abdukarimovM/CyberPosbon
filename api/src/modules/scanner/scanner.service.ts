@@ -1,18 +1,16 @@
 import { Injectable } from '@nestjs/common';
 import { UrlscanScanner } from './providers/urlscan.scanner';
 
-import {
-  ScannerResult,
-} from './interfaces/scanner-result.interface';
+import { ScannerResult } from './interfaces/scanner-result.interface';
 
 import { RiskEngineService } from './risk/risk-engine.service';
 
 @Injectable()
 export class ScannerService {
- constructor(
-  private readonly riskEngine: RiskEngineService,
-  private readonly urlscanScanner: UrlscanScanner,
-) {}
+  constructor(
+    private readonly riskEngine: RiskEngineService,
+    private readonly urlscanScanner: UrlscanScanner,
+  ) {}
   /**
    * Bir nechta scanner natijalarini yig‘adi.
    *
@@ -23,34 +21,24 @@ export class ScannerService {
   async scanUrl(
     url: string,
     scanners: Array<{
-      scan: (
-        url: string,
-      ) => Promise<ScannerResult>;
+      scan: (url: string) => Promise<ScannerResult>;
     }>,
   ): Promise<ScannerResult[]> {
     const results = await Promise.all(
-  scanners.map(
-    async (
-      scanner,
-    ): Promise<ScannerResult> => {
-      try {
-        return await scanner.scan(url);
-      } catch (error) {
-        console.error(
-          'Scanner error:',
-          error,
-        );
+      scanners.map(async (scanner): Promise<ScannerResult> => {
+        try {
+          return await scanner.scan(url);
+        } catch (error) {
+          console.error('Scanner error:', error);
 
-        return {
-          provider: 'unknown',
-          status: 'unknown',
-          message:
-            'Scanner ishlashida xatolik yuz berdi.',
-        };
-      }
-    },
-  ),
-);
+          return {
+            provider: 'unknown',
+            status: 'unknown',
+            message: 'Scanner ishlashida xatolik yuz berdi.',
+          };
+        }
+      }),
+    );
 
     return results;
   }
@@ -59,212 +47,143 @@ export class ScannerService {
    * Scanner natijalaridan umumiy
    * xavf darajasini Risk Engine orqali aniqlaydi.
    */
-  calculateStatus(
-    results: ScannerResult[],
-  ): ScannerResult['status'] {
-    return this.riskEngine.analyze(
-      results,
-    );
+  calculateStatus(results: ScannerResult[]): ScannerResult['status'] {
+    return this.riskEngine.analyze(results);
   }
 
- /**
- * URLScan chuqur tahlilini BOSHLAYDI.
- *
- * Muhim:
- * - URLScan natijasini kutib turmaydi.
- * - Polling qilmaydi.
- * - Faqat scan boshlanganini va resultUrl'ni qaytaradi.
- */
-async startUrlscanDeep(
-  url: string,
-): Promise<ScannerResult> {
-  try {
-    console.log(
-      '🔬 URLScan deep scan boshlandi:',
-      url,
-    );
+  /**
+   * URLScan chuqur tahlilini BOSHLAYDI.
+   *
+   * Muhim:
+   * - URLScan natijasini kutib turmaydi.
+   * - Polling qilmaydi.
+   * - Faqat scan boshlanganini va resultUrl'ni qaytaradi.
+   */
+  async startUrlscanDeep(url: string): Promise<ScannerResult> {
+    try {
+      console.log('🔬 URLScan deep scan boshlandi:', url);
 
-    const smartResult =
-      await this.urlscanScanner.smartScan(url);
+      const smartResult = await this.urlscanScanner.smartScan(url);
 
-    console.log(
-      '🔬 URLScan smart result:',
-      smartResult.message,
-    );
+      console.log('🔬 URLScan smart result:', smartResult.message);
 
-    return smartResult;
+      return smartResult;
+    } catch (error) {
+      console.error('❌ URLScan deep scan error:', error);
 
-  } catch (error) {
-    console.error(
-      '❌ URLScan deep scan error:',
-      error,
-    );
+      return {
+        provider: 'urlscan',
+        status: 'unknown',
+        message: 'Chuqur tahlilni boshlashda xatolik yuz berdi.',
+        raw: {
+          error: error instanceof Error ? error.message : String(error),
+        },
+      };
+    }
+  }
+  /**
+   * Tezkor scanner natijalariga
+   * URLScan final natijasini qo‘shib,
+   * yakuniy riskni hisoblaydi.
+   */
+  calculateFinalRisk(results: ScannerResult[], urlscanResult: ScannerResult) {
+    const allResults = [...results, urlscanResult];
+
+    const status = this.riskEngine.analyze(allResults);
+
+    const score = this.riskEngine.calculateScore(allResults);
+
+    const level = this.riskEngine.getRiskLevel(score, status);
 
     return {
-      provider: 'urlscan',
-      status: 'unknown',
-      message:
-        'Chuqur tahlilni boshlashda xatolik yuz berdi.',
-      raw: {
-        error:
-          error instanceof Error
-            ? error.message
-            : String(error),
+      status,
+      risk: {
+        score,
+        level,
       },
+      results: allResults,
     };
   }
-}
-/**
- * Tezkor scanner natijalariga
- * URLScan final natijasini qo‘shib,
- * yakuniy riskni hisoblaydi.
- */
-calculateFinalRisk(
-  results: ScannerResult[],
-  urlscanResult: ScannerResult,
-) {
-  const allResults = [
-    ...results,
-    urlscanResult,
-  ];
 
-  const status =
-  this.riskEngine.analyze(
-    allResults,
-  );
-
-const score =
-  this.riskEngine.calculateScore(
-    allResults,
-  );
-
-const level =
-  this.riskEngine.getRiskLevel(
-    score,
-    status,
-  );
-
-return {
-  status,
-  risk: {
-    score,
-    level,
-  },
-  results: allResults,
-};
-}
-
-/**
- * URLScan chuqur tahlili natijasini oladi.
- *
- * Bu metod faqat foydalanuvchi
- * "Natijani tekshirish" tugmasini bosganda ishlaydi.
- */
-async pollUrlscanDeep(
-  resultUrl: string,
-  results: ScannerResult[] = [],
-): Promise<{
-  result: ScannerResult;
-  finalRisk: {
-    status: ScannerResult['status'];
-    risk: {
-      score: number;
-      level:
-        | 'safe'
-        | 'suspicious'
-        | 'dangerous'
-        | 'unknown';
+  /**
+   * URLScan chuqur tahlili natijasini oladi.
+   *
+   * Bu metod faqat foydalanuvchi
+   * "Natijani tekshirish" tugmasini bosganda ishlaydi.
+   */
+  async pollUrlscanDeep(
+    resultUrl: string,
+    results: ScannerResult[] = [],
+  ): Promise<{
+    result: ScannerResult;
+    finalRisk: {
+      status: ScannerResult['status'];
+      risk: {
+        score: number;
+        level: 'safe' | 'suspicious' | 'dangerous' | 'unknown';
+      };
+      results: ScannerResult[];
     };
-    results: ScannerResult[];
-  };
-}> {
-  try {
-    console.log(
-      '🔄 URLScan deep result tekshirilmoqda:',
-      resultUrl,
-    );
+  }> {
+    try {
+      console.log('🔄 URLScan deep result tekshirilmoqda:', resultUrl);
 
-    const urlscanResult =
-      await this.urlscanScanner.pollResult(
-        resultUrl,
+      const urlscanResult = await this.urlscanScanner.pollResult(resultUrl);
+
+      console.log(
+        '✅ URLScan result:',
+        urlscanResult.status,
+        urlscanResult.message,
       );
 
-    console.log(
-      '✅ URLScan result:',
-      urlscanResult.status,
-      urlscanResult.message,
-    );
+      const finalRisk = this.calculateFinalRisk(results, urlscanResult);
 
-    const finalRisk =
-      this.calculateFinalRisk(
-        results,
-        urlscanResult,
-      );
+      console.log('🧠 FINAL RISK:', finalRisk);
 
-    console.log(
-      '🧠 FINAL RISK:',
-      finalRisk,
-    );
+      return {
+        result: urlscanResult,
+        finalRisk,
+      };
+    } catch (error) {
+      console.error('❌ URLScan deep polling error:', error);
 
-    return {
-      result: urlscanResult,
-      finalRisk,
-    };
+      const errorResult: ScannerResult = {
+        provider: 'urlscan',
+        status: 'unknown',
+        message: 'URLScan natijasini olishda xatolik yuz berdi.',
+        raw: {
+          error: error instanceof Error ? error.message : String(error),
+        },
+      };
 
-  } catch (error) {
-    console.error(
-      '❌ URLScan deep polling error:',
-      error,
-    );
+      const finalRisk = this.calculateFinalRisk(results, errorResult);
 
-    const errorResult: ScannerResult = {
-      provider: 'urlscan',
-      status: 'unknown',
-      message:
-        'URLScan natijasini olishda xatolik yuz berdi.',
-      raw: {
-        error:
-          error instanceof Error
-            ? error.message
-            : String(error),
-      },
-    };
-
-    const finalRisk =
-      this.calculateFinalRisk(
-        results,
-        errorResult,
-      );
-
-    return {
-      result: errorResult,
-      finalRisk,
-    };
+      return {
+        result: errorResult,
+        finalRisk,
+      };
+    }
   }
-}
 
   /**
    * Umumiy risk score.
    */
-  calculateScore(
-    results: ScannerResult[],
-  ): number {
-    return this.riskEngine.calculateScore(
-      results,
-    );
+  calculateScore(results: ScannerResult[]): number {
+    return this.riskEngine.calculateScore(results);
   }
 
- /**
- * Score va umumiy status asosida
- * yakuniy risk darajasini aniqlaydi.
- */
-getRiskLevel(
-  score: number,
-  status: ScannerResult['status'],
-): 'safe' | 'suspicious' | 'dangerous' | 'unknown' {
-  return this.riskEngine.getRiskLevel(
-    score,
-    status,
-  );
-}
+  /**
+   * Score va umumiy status asosida
+   * yakuniy risk darajasini aniqlaydi.
+   */
+  getRiskLevel(
+    score: number,
+    status: ScannerResult['status'],
+  ): 'safe' | 'suspicious' | 'dangerous' | 'unknown' {
+    return this.riskEngine.getRiskLevel(score, status);
+  }
+
+  async checkDeepScanResult(resultUrl: string): Promise<ScannerResult> {
+    return this.urlscanScanner.getResult(resultUrl);
+  }
 }
