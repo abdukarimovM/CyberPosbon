@@ -84,6 +84,22 @@ export class ScannerController {
     };
   }
 
+  @Post('deep-scan/status')
+  async deepScanStatus(
+    @Body()
+    body: {
+      resultUrl: string;
+      results?: ScannerResult[];
+    },
+  ) {
+    const result = await this.scannerService.pollUrlscanDeep(
+      body.resultUrl,
+      body.results || [],
+    );
+
+    return result;
+  }
+
   @Post('deep-poll')
   async deepPoll(
     @Body()
