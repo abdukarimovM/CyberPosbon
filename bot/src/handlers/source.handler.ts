@@ -314,39 +314,120 @@ export function registerSourceHandler(bot: Telegraf) {
       console.log("🔬 DEEP SCAN RESULT:", result);
 
       // =====================================================
-      // 📊 NATIJANI ANIQLASH
+      // 🔎 DEEP SCAN MA'LUMOTLARI
       // =====================================================
 
       const deepScan = result?.deepScan || result?.result?.raw || {};
 
       const pending = deepScan?.pending === true;
 
-      const resultUrl = deepScan?.resultUrl;
+      const resultUrl =
+        deepScan?.resultUrl || result?.result?.raw?.resultUrl || null;
+
+      // URLScan result URLni saqlaymiz
+      if (resultUrl) {
+        deepScanUrls.set(telegramId, resultUrl);
+      }
+
+      // =====================================================
+      // ✅ URLSCAN TAYYOR NATIJA QAYTARDI
+      // =====================================================
+
+      const readyStatus = result?.status || result?.result?.status || "unknown";
+
+      if (
+        readyStatus === "safe" ||
+        readyStatus === "suspicious" ||
+        readyStatus === "dangerous"
+      ) {
+        const emoji =
+          readyStatus === "safe"
+            ? "🟢"
+            : readyStatus === "suspicious"
+              ? "🟡"
+              : "🔴";
+
+        const readyMessage =
+          language === "ru"
+            ? `🔬 Результат глубокого анализа\n\n` +
+              `${emoji} Статус: ${readyStatus}\n\n` +
+              `${result?.message || result?.result?.message || ""}`
+            : language === "uz_cyr"
+              ? `🔬 Чуқур таҳлил натижаси\n\n` +
+                `${emoji} Ҳолати: ${readyStatus}\n\n` +
+                `${result?.message || result?.result?.message || ""}`
+              : `🔬 Chuqur tahlil natijasi\n\n` +
+                `${emoji} Holati: ${readyStatus}\n\n` +
+                `${result?.message || result?.result?.message || ""}`;
+
+        await ctx.reply(
+          readyMessage,
+          Markup.inlineKeyboard([
+            [
+              Markup.button.callback(
+                language === "ru"
+                  ? "⬅️ Главное меню"
+                  : language === "uz_cyr"
+                    ? "⬅️ Асосий меню"
+                    : "⬅️ Asosiy menyu",
+                "main_menu",
+              ),
+            ],
+          ]),
+        );
+
+        return;
+      }
 
       // =====================================================
       // ⏳ URLSCAN HALI TAYYOR EMAS
       // =====================================================
 
       if (pending) {
+        let message = "";
+
         if (language === "ru") {
-          await ctx.reply(
+          message =
             `⏳ Глубокий анализ выполняется.\n\n` +
-              `🔬 URLScan ещё не завершил анализ.\n\n` +
-              `Попробуйте проверить результат позже.`,
-          );
+            `🔬 URLScan ещё не завершил анализ.\n\n` +
+            `Результат можно проверить позже.`;
         } else if (language === "uz_cyr") {
-          await ctx.reply(
+          message =
             `⏳ Чуқур таҳлил давом этмоқда.\n\n` +
-              `🔬 URLScan ҳали таҳлилни якунламаган.\n\n` +
-              `Натижани кейинроқ қайта текширишингиз мумкин.`,
-          );
+            `🔬 URLScan ҳали таҳлилни якунламаган.\n\n` +
+            `Натижани кейинроқ текширишингиз мумкин.`;
         } else {
-          await ctx.reply(
+          message =
             `⏳ Chuqur tahlil davom etmoqda.\n\n` +
-              `🔬 URLScan hali tahlilni yakunlamagan.\n\n` +
-              `Natijani keyinroq qayta tekshirishingiz mumkin.`,
-          );
+            `🔬 URLScan hali tahlilni yakunlamagan.\n\n` +
+            `Natijani keyinroq tekshirishingiz mumkin.`;
         }
+
+        await ctx.reply(
+          message,
+          Markup.inlineKeyboard([
+            [
+              Markup.button.callback(
+                language === "ru"
+                  ? "🔄 Проверить результат"
+                  : language === "uz_cyr"
+                    ? "🔄 Натижани текшириш"
+                    : "🔄 Natijani tekshirish",
+                "check_deep_scan",
+              ),
+            ],
+            [
+              Markup.button.callback(
+                language === "ru"
+                  ? "⬅️ Главное меню"
+                  : language === "uz_cyr"
+                    ? "⬅️ Асосий меню"
+                    : "⬅️ Asosiy menyu",
+                "main_menu",
+              ),
+            ],
+          ]),
+        );
 
         return;
       }
@@ -453,8 +534,11 @@ export function registerSourceHandler(bot: Telegraf) {
       // 🔄 BACKENDDAN NATIJANI TEKSHIRISH
       // =====================================================
 
+      const scannerResults = deepScanResults.get(telegramId) || [];
+
       const response = await api.post("/scanner/deep-scan/status", {
         resultUrl,
+        results: scannerResults,
       });
 
       const data = response.data;
