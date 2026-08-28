@@ -8,6 +8,8 @@ import { UrlhausScanner } from './providers/urlhaus.scanner';
 import { VirusTotalScanner } from './providers/virustotal.scanner';
 import { UrlscanScanner } from './providers/urlscan.scanner';
 
+import { VirusTotalFileScanner } from './providers/virustotal-file.scanner';
+
 import { RiskEngineService } from './risk/risk-engine.service';
 
 @Module({
@@ -22,6 +24,7 @@ import { RiskEngineService } from './risk/risk-engine.service';
     RiskEngineService,
     VirusTotalScanner,
     UrlscanScanner,
+    VirusTotalFileScanner,
   ],
 
   exports: [

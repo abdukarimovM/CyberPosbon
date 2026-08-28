@@ -518,6 +518,10 @@ export function registerSourceHandler(bot: Telegraf) {
 
       const telegramId = ctx.from.id.toString();
 
+      // =====================================================
+      // 🔗 OLDINGI DEEP SCAN URL
+      // =====================================================
+
       const resultUrl = deepScanUrls.get(telegramId);
 
       if (!resultUrl) {
@@ -531,10 +535,14 @@ export function registerSourceHandler(bot: Telegraf) {
       const language = await getUserLanguage(telegramId);
 
       // =====================================================
-      // 🔄 BACKENDDAN NATIJANI TEKSHIRISH
+      // 📦 OLDINGI TEZKOR SCANNER NATIJALARI
       // =====================================================
 
       const scannerResults = deepScanResults.get(telegramId) || [];
+
+      // =====================================================
+      // 🔄 BACKENDDAN DEEP SCAN NATIJASINI OLAMIZ
+      // =====================================================
 
       const response = await api.post("/scanner/deep-scan/status", {
         resultUrl,
@@ -542,19 +550,27 @@ export function registerSourceHandler(bot: Telegraf) {
       });
 
       const data = response.data;
+
+      console.log("🔬 DEEP SCAN STATUS:", data);
+
       const result = data?.result;
 
       // =====================================================
-      // ⏳ HALI TAYYOR EMAS
+      // ⏳ URLSCAN HALI TUGAMAGAN
       // =====================================================
 
-      if (!result || result.status === "unknown") {
+      const raw =
+        result?.raw && typeof result.raw === "object" ? result.raw : {};
+
+      const pending = raw?.pending === true;
+
+      if (pending) {
         const message =
           language === "ru"
-            ? "⏳ Глубокий анализ ещё не завершён.\n\nПопробуйте проверить результат позже."
+            ? "⏳ Глубокий анализ ещё выполняется.\n\n🔬 URLScan ещё не завершил анализ.\n\nПопробуйте проверить результат позже."
             : language === "uz_cyr"
-              ? "⏳ Чуқур таҳлил ҳали тугамади.\n\nНатижани кейинроқ текширинг."
-              : "⏳ Chuqur tahlil hali tugamadi.\n\nNatijani birozdan keyin qayta tekshiring.";
+              ? "⏳ Чуқур таҳлил ҳали давом этмоқда.\n\n🔬 URLScan ҳали таҳлилни якунламаган.\n\nНатижани кейинроқ текширинг."
+              : "⏳ Chuqur tahlil hali davom etmoqda.\n\n🔬 URLScan hali tahlilni yakunlamagan.\n\nNatijani keyinroq tekshiring.";
 
         await ctx.reply(
           message,
@@ -589,43 +605,64 @@ export function registerSourceHandler(bot: Telegraf) {
       // ✅ NATIJA TAYYOR
       // =====================================================
 
-      const riskLevel = result.status || "unknown";
+      const finalRisk = data?.finalRisk || result?.finalRisk;
 
-      const raw = result.raw;
+      const finalStatus = finalRisk?.status || result?.status || "unknown";
 
-      const score = raw?.verdicts?.overall?.score ?? 0;
+      const finalScore = finalRisk?.risk?.score ?? result?.risk?.score ?? 0;
+
+      const finalLevel =
+        finalRisk?.risk?.level || result?.risk?.level || finalStatus;
+
+      // =====================================================
+      // 🎨 STATUS EMOJI
+      // =====================================================
 
       let emoji = "⚪";
 
-      if (riskLevel === "safe") {
+      if (finalLevel === "safe") {
         emoji = "🟢";
-      } else if (riskLevel === "suspicious") {
+      } else if (finalLevel === "suspicious") {
         emoji = "🟡";
-      } else if (riskLevel === "dangerous") {
+      } else if (finalLevel === "dangerous") {
         emoji = "🔴";
       }
+
+      // =====================================================
+      // 📝 NATIJA XABARI
+      // =====================================================
 
       let message = "";
 
       if (language === "ru") {
         message =
           `🔬 Результат глубокого анализа\n\n` +
-          `${emoji} Статус: ${riskLevel}\n` +
-          `🎯 Балл риска: ${score}\n\n` +
-          `${result.message || ""}`;
+          `🌐 URL: ${resultUrl}\n\n` +
+          `${emoji} Статус: ${finalStatus}\n` +
+          `⚠️ Уровень риска: ${finalLevel}\n` +
+          `🎯 Балл риска: ${finalScore}\n\n` +
+          `${result?.message || ""}`;
       } else if (language === "uz_cyr") {
         message =
           `🔬 Чуқур таҳлил натижаси\n\n` +
-          `${emoji} Ҳолати: ${riskLevel}\n` +
-          `🎯 Хавф бали: ${score}\n\n` +
-          `${result.message || ""}`;
+          `🌐 URL: ${resultUrl}\n\n` +
+          `${emoji} Ҳолати: ${finalStatus}\n` +
+          `⚠️ Хавф даражаси: ${finalLevel}\n` +
+          `🎯 Хавф бали: ${finalScore}\n\n` +
+          `${result?.message || ""}`;
       } else {
         message =
           `🔬 Chuqur tahlil natijasi\n\n` +
-          `${emoji} Holati: ${riskLevel}\n` +
-          `🎯 Xavf bali: ${score}\n\n` +
-          `${result.message || ""}`;
+          `🌐 URL: ${resultUrl}\n\n` +
+          `${emoji} Holati: ${finalStatus}\n` +
+          `⚠️ Xavf darajasi: ${finalLevel}\n` +
+          `🎯 Xavf bali: ${finalScore}\n\n` +
+          `${result?.message || ""}`;
       }
+
+      // =====================================================
+      // 📤 FOYDALANUVCHIGA YAKUNIY NATIJA
+      // =====================================================
 
       await ctx.reply(
         message,
@@ -642,10 +679,29 @@ export function registerSourceHandler(bot: Telegraf) {
           ],
         ]),
       );
-    } catch (error) {
-      console.error("Check deep scan error:", error);
 
-      await ctx.reply("❌ Chuqur tahlil natijasini olishda xatolik yuz berdi.");
+      // =====================================================
+      // 🧹 NATIJA TAYYOR BO'LGACH TOZALAYMIZ
+      // =====================================================
+
+      deepScanUrls.delete(telegramId);
+      deepScanResults.delete(telegramId);
+    } catch (error) {
+      console.error("❌ Check deep scan error:", error);
+
+      const language = await getUserLanguage(ctx.from.id.toString());
+
+      if (language === "ru") {
+        await ctx.reply(
+          "❌ При получении результата глубокого анализа произошла ошибка.",
+        );
+      } else if (language === "uz_cyr") {
+        await ctx.reply("❌ Чуқур таҳлил натижасини олишда хатолик юз берди.");
+      } else {
+        await ctx.reply(
+          "❌ Chuqur tahlil natijasini olishda xatolik yuz berdi.",
+        );
+      }
     }
   });
 }
