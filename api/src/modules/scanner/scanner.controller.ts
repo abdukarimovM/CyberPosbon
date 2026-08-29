@@ -189,4 +189,23 @@ export class ScannerController {
       ...result,
     };
   }
+
+  @Post('file/check-status')
+  async checkFileStatus(
+    @Body()
+    body: {
+      analysisId: string;
+    },
+  ) {
+    if (!body.analysisId) {
+      throw new BadRequestException('analysisId yuborilmadi.');
+    }
+
+    const result = await this.scannerService.checkFileAnalysis(body.analysisId);
+
+    return {
+      analysisId: body.analysisId,
+      result,
+    };
+  }
 }

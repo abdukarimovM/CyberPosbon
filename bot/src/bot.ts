@@ -5,6 +5,7 @@ import { registerSettingsHandler } from './handlers/settings.handler';
 import { registerProfileHandler } from './handlers/profile.handler';
 import { registerAdminHandler } from './handlers/admin.handler';
 import { registerSourceHandler } from './handlers/source.handler';
+import { registerFileHandler } from './handlers/file.handler';
 
 import 'dotenv/config';
 import { Telegraf, Markup } from 'telegraf';
@@ -27,6 +28,7 @@ registerSettingsHandler(bot);
 registerProfileHandler(bot);
 registerAdminHandler(bot);
 registerSourceHandler(bot);
+registerFileHandler(bot);
 
 async function getUserLanguage(
   telegramId: string,
