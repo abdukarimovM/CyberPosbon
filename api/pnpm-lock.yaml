@@ -38,6 +38,9 @@ importers:
       dotenv:
         specifier: ^17.4.2
         version: 17.4.2
+      form-data:
+        specifier: ^4.0.6
+        version: 4.0.6
       googleapis:
         specifier: ^174.0.1
         version: 174.0.1(supports-color@8.1.1)

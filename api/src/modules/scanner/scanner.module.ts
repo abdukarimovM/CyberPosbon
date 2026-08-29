@@ -9,6 +9,8 @@ import { VirusTotalScanner } from './providers/virustotal.scanner';
 import { UrlscanScanner } from './providers/urlscan.scanner';
 
 import { VirusTotalFileScanner } from './providers/virustotal-file.scanner';
+import { FileHashService } from './file/file-hash.service';
+
 
 import { RiskEngineService } from './risk/risk-engine.service';
 
@@ -25,6 +27,7 @@ import { RiskEngineService } from './risk/risk-engine.service';
     VirusTotalScanner,
     UrlscanScanner,
     VirusTotalFileScanner,
+    FileHashService,
   ],
 
   exports: [

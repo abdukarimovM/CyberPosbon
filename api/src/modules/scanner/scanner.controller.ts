@@ -1,4 +1,11 @@
-import { Body, Controller, Post } from '@nestjs/common';
+import {
+  Body,
+  Controller,
+  Post,
+  UploadedFile,
+  UseInterceptors,
+  BadRequestException,
+} from '@nestjs/common';
 
 import { GoogleSafeBrowsingScanner } from './providers/google-safe-browsing.scanner';
 import { UrlhausScanner } from './providers/urlhaus.scanner';
@@ -7,6 +14,8 @@ import { ScannerService } from './scanner.service';
 import { VirusTotalScanner } from './providers/virustotal.scanner';
 import { UrlscanScanner } from './providers/urlscan.scanner';
 import { ScannerResult } from './interfaces/scanner-result.interface';
+
+import { FileInterceptor } from '@nestjs/platform-express';
 
 @Controller('scanner')
 export class ScannerController {
@@ -160,5 +169,24 @@ export class ScannerController {
   @Post('urlscan-poll')
   async urlscanPoll(@Body() body: { resultUrl: string }) {
     return this.urlscanScanner.pollResult(body.resultUrl);
+  }
+
+  @Post('file/check')
+  @UseInterceptors(FileInterceptor('file'))
+  async checkFile(@UploadedFile() file: any) {
+    if (!file) {
+      throw new BadRequestException('Fayl yuborilmadi.');
+    }
+
+    console.log('📱 Fayl qabul qilindi:', file.originalname);
+
+    const result = await this.scannerService.scanFile(file.path);
+
+    return {
+      filename: file.originalname,
+      mimetype: file.mimetype,
+      size: file.size,
+      ...result,
+    };
   }
 }
