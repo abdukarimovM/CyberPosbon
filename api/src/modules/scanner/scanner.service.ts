@@ -15,7 +15,7 @@ export class ScannerService {
     private readonly urlscanScanner: UrlscanScanner,
     private readonly fileHashService: FileHashService,
     private readonly virusTotalFileScanner: VirusTotalFileScanner,
-  ) {}
+  ) { }
   /**
    * Bir nechta scanner natijalarini yig‘adi.
    *
@@ -193,32 +193,85 @@ export class ScannerService {
   }
 
   async scanFile(filePath: string) {
-    // 1. SHA-256 hisoblash
-    const sha256 = await this.fileHashService.calculateSha256(filePath);
+    console.log('📱 APK fayl tekshiruvi boshlandi');
 
-    console.log('📱 File SHA-256:', sha256);
+    const result =
+      await this.virusTotalFileScanner.scan(filePath);
 
-    // 2. VirusTotal bazasidan hash qidirish
-    const report = await this.virusTotalFileScanner.getFileReport(sha256);
+    const score =
+      this.riskEngine.calculateScore([
+        result,
+      ]);
 
-    // 3. Fayl VirusTotal bazasida mavjud
-    if (report) {
-      console.log('🦠 VirusTotal file report topildi');
+    const level =
+      this.riskEngine.getRiskLevel(
+        score,
+        result.status,
+      );
 
-      return {
-        found: true,
-        sha256,
-        report,
-      };
-    }
+    console.log(
+      '🛡️ File status:',
+      result.status,
+    );
 
-    // 4. Fayl VirusTotal bazasida mavjud emas
-    console.log('📭 VirusTotal bazasida fayl topilmadi');
+    console.log(
+      '🎯 File risk score:',
+      score,
+    );
+
+    console.log(
+      '🚦 File risk level:',
+      level,
+    );
 
     return {
-      found: false,
-      sha256,
-      report: null,
+      status: result.status,
+
+      risk: {
+        score,
+        level,
+      },
+
+      score,
+
+      found:
+        result.raw &&
+          typeof result.raw === 'object' &&
+          'report' in result.raw
+          ? true
+          : false,
+
+      sha256:
+        result.raw &&
+          typeof result.raw === 'object' &&
+          'sha256' in result.raw
+          ? result.raw.sha256
+          : null,
+
+      message: result.message,
+
+      report:
+        result.raw &&
+          typeof result.raw === 'object' &&
+          'report' in result.raw
+          ? result.raw.report
+          : null,
+
+      analysisId:
+        result.raw &&
+          typeof result.raw === 'object' &&
+          'analysisId' in result.raw
+          ? result.raw.analysisId
+          : null,
+
+      pending:
+        result.raw &&
+          typeof result.raw === 'object' &&
+          'pending' in result.raw
+          ? result.raw.pending
+          : false,
+
+      result,
     };
   }
 

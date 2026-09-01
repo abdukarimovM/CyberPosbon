@@ -26,7 +26,7 @@ export class ScannerController {
     private readonly urlscanScanner: UrlscanScanner,
     private readonly scannerService: ScannerService,
     private readonly riskEngine: RiskEngineService,
-  ) {}
+  ) { }
 
   @Post('check')
   async check(@Body() body: { url: string }) {
@@ -69,9 +69,9 @@ export class ScannerController {
     const raw =
       result.raw && typeof result.raw === 'object'
         ? (result.raw as {
-            pending?: boolean;
-            resultUrl?: string;
-          })
+          pending?: boolean;
+          resultUrl?: string;
+        })
         : null;
 
     return {
@@ -172,8 +172,11 @@ export class ScannerController {
   }
 
   @Post('file/check')
-  @UseInterceptors(FileInterceptor('file'))
-  async checkFile(@UploadedFile() file: any) {
+  @UseInterceptors(
+    FileInterceptor('file', {
+      dest: './uploads',
+    }),
+  ) async checkFile(@UploadedFile() file: any) {
     if (!file) {
       throw new BadRequestException('Fayl yuborilmadi.');
     }
@@ -198,13 +201,73 @@ export class ScannerController {
     },
   ) {
     if (!body.analysisId) {
-      throw new BadRequestException('analysisId yuborilmadi.');
+      throw new BadRequestException(
+        'analysisId yuborilmadi.',
+      );
     }
 
-    const result = await this.scannerService.checkFileAnalysis(body.analysisId);
+    const result =
+      await this.scannerService.checkFileAnalysis(
+        body.analysisId,
+      );
+
+    // =====================================================
+    // ⏳ TAHLIL HALI TUGAMAGAN
+    // =====================================================
+
+    if (result.status === 'unknown') {
+      return {
+        analysisId: body.analysisId,
+        status: 'unknown',
+        pending: true,
+        result,
+      };
+    }
+
+    // =====================================================
+    // 🧠 RISK ENGINE
+    // =====================================================
+
+    const score =
+      this.riskEngine.calculateScore([
+        result,
+      ]);
+
+    const level =
+      this.riskEngine.getRiskLevel(
+        score,
+        result.status,
+      );
+
+    console.log(
+      '🧠 FILE FINAL RISK:',
+      {
+        status: result.status,
+        score,
+        level,
+      },
+    );
+
+    // =====================================================
+    // ✅ YAKUNIY NATIJA
+    // =====================================================
 
     return {
       analysisId: body.analysisId,
+
+      status: result.status,
+
+      pending: false,
+
+      score,
+
+      risk: {
+        score,
+        level,
+      },
+
+      message: result.message,
+
       result,
     };
   }

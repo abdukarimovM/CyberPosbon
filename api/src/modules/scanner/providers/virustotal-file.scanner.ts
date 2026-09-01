@@ -141,38 +141,158 @@ export class VirusTotalFileScanner {
 
   async uploadFile(filePath: string): Promise<string> {
     if (!this.apiKey) {
-      throw new Error('VIRUSTOTAL_API_KEY .env faylida topilmadi');
+      throw new Error(
+        'VIRUSTOTAL_API_KEY .env faylida topilmadi',
+      );
     }
 
     try {
-      console.log('📤 Fayl VirusTotal ga yuklanmoqda...');
+      console.log(
+        '📤 VirusTotal fayl yuklash boshlandi...',
+      );
 
-      const FormData = (await import('form-data')).default;
+      const FormData =
+        (await import('form-data')).default;
 
-      const form = new FormData();
+      // =====================================================
+      // 📏 FAYL HAJMINI ANIQLASH
+      // =====================================================
 
-      form.append('file', fs.createReadStream(filePath));
+      const stats =
+        fs.statSync(filePath);
 
-      const response = await axios.post(`${this.apiUrl}/files`, form, {
-        headers: {
-          'x-apikey': this.apiKey,
-          ...form.getHeaders(),
-        },
-        maxContentLength: Infinity,
-        maxBodyLength: Infinity,
-      });
+      const fileSize =
+        stats.size;
 
-      const analysisId = response.data?.data?.id;
+      const fileSizeMB =
+        fileSize /
+        (1024 * 1024);
 
-      if (!analysisId) {
-        throw new Error('VirusTotal analysis ID qaytarmadi.');
+      console.log(
+        `📦 Fayl hajmi: ${fileSizeMB.toFixed(2)} MB`,
+      );
+
+      // VirusTotal 32 MB chegarasi
+      const MAX_DIRECT_UPLOAD =
+        32 * 1024 * 1024;
+
+      let uploadUrl =
+        `${this.apiUrl}/files`;
+
+      // =====================================================
+      // 📦 32 MB DAN KATTA FAYL
+      // =====================================================
+
+      if (
+        fileSize >
+        MAX_DIRECT_UPLOAD
+      ) {
+        console.log(
+          '📦 Fayl 32 MB dan katta.',
+        );
+
+        console.log(
+          '🔗 VirusTotal katta fayl uchun upload URL olinmoqda...',
+        );
+
+        const uploadUrlResponse =
+          await axios.get(
+            `${this.apiUrl}/files/upload_url`,
+            {
+              headers: {
+                'x-apikey':
+                  this.apiKey,
+              },
+            },
+          );
+
+        uploadUrl =
+          uploadUrlResponse.data?.data;
+
+        if (!uploadUrl) {
+          throw new Error(
+            'VirusTotal upload URL qaytarmadi.',
+          );
+        }
+
+        console.log(
+          '✅ Katta fayl uchun upload URL olindi.',
+        );
       }
 
-      console.log('📤 VirusTotal analysis ID:', analysisId);
+      // =====================================================
+      // 📤 FAYLNI YUKLASH
+      // =====================================================
+
+      const form =
+        new FormData();
+
+      form.append(
+        'file',
+        fs.createReadStream(
+          filePath,
+        ),
+      );
+
+      console.log(
+        '📤 VirusTotal ga fayl yuborilmoqda...',
+      );
+
+      const response =
+        await axios.post(
+          uploadUrl,
+          form,
+          {
+            headers: {
+              'x-apikey':
+                this.apiKey,
+
+              ...form.getHeaders(),
+            },
+
+            maxContentLength:
+              Infinity,
+
+            maxBodyLength:
+              Infinity,
+
+            timeout:
+              10 * 60 * 1000,
+          },
+        );
+
+      // =====================================================
+      // 🆔 ANALYSIS ID
+      // =====================================================
+
+      const analysisId =
+        response.data?.data?.id;
+
+      if (!analysisId) {
+        console.error(
+          '❌ VirusTotal javobi:',
+          response.data,
+        );
+
+        throw new Error(
+          'VirusTotal analysis ID qaytarmadi.',
+        );
+      }
+
+      console.log(
+        '✅ VirusTotal analysis ID:',
+        analysisId,
+      );
 
       return analysisId;
-    } catch (error) {
-      console.error('❌ VirusTotal file upload error:', error);
+
+    } catch (error: any) {
+
+      console.error(
+        '❌ VirusTotal file upload error:',
+        error?.response?.data ||
+        error,
+      );
 
       throw error;
     }
