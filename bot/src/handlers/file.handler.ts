@@ -121,6 +121,11 @@ export function registerFileHandler(
     const telegramId =
       ctx.from.id.toString();
 
+    const language =
+      await getUserLanguage(
+        telegramId,
+      );
+
     if (!waitingForFile.has(telegramId)) {
       return;
     }
@@ -130,11 +135,6 @@ export function registerFileHandler(
       waitingForFile.delete(
         telegramId,
       );
-
-      const language =
-        await getUserLanguage(
-          telegramId,
-        );
 
       const document =
         ctx.message.document;
@@ -379,8 +379,7 @@ export function registerFileHandler(
         }
       }
 
-    } catch (error) {
-
+    } catch (error: any) {
       console.error(
         '❌ File receive error:',
         error,
@@ -390,8 +389,67 @@ export function registerFileHandler(
         telegramId,
       );
 
+      // =====================================================
+      // 📦 100 MB DAN KATTA FAYL
+      // =====================================================
+
+      const errorMessage =
+        error?.response?.data?.message;
+
+      const isFileTooLarge =
+        Array.isArray(errorMessage)
+          ? errorMessage.some(
+            (message: string) =>
+              message.includes(
+                'File too large',
+              ),
+          )
+          : typeof errorMessage ===
+          'string' &&
+          errorMessage.includes(
+            'File too large',
+          );
+
+      if (isFileTooLarge) {
+        const message =
+          language === 'ru'
+            ? '❌ Файл слишком большой.\n\n📦 Максимальный размер файла: 100 МБ.'
+            : language === 'uz_cyr'
+              ? '❌ Файл ҳажми жуда катта.\n\n📦 Максимал рухсат этилган ҳажм: 100 МБ.'
+              : '❌ Fayl hajmi juda katta.\n\n📦 Maksimal ruxsat etilgan hajm: 100 MB.';
+
+        await ctx.reply(
+          message,
+          Markup.inlineKeyboard([
+            [
+              Markup.button.callback(
+                language === 'ru'
+                  ? '⬅️ Главное меню'
+                  : language === 'uz_cyr'
+                    ? '⬅️ Асосий меню'
+                    : '⬅️ Asosiy menyu',
+                'main_menu',
+              ),
+            ],
+          ]),
+        );
+
+        return;
+      }
+
+      // =====================================================
+      // ❌ BOSHQA XATOLIK
+      // =====================================================
+
+      const message =
+        language === 'ru'
+          ? '❌ Произошла ошибка при проверке файла.'
+          : language === 'uz_cyr'
+            ? '❌ Файлни текширишда хатолик юз берди.'
+            : '❌ Faylni tekshirishda xatolik yuz berdi.';
+
       await ctx.reply(
-        '❌ Faylni qabul qilishda xatolik yuz berdi.',
+        message,
       );
     }
   });

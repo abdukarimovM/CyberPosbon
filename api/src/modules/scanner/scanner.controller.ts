@@ -175,15 +175,28 @@ export class ScannerController {
   @UseInterceptors(
     FileInterceptor('file', {
       dest: './uploads',
+
+      limits: {
+        fileSize: 100 * 1024 * 1024, // 100 MB
+      },
     }),
-  ) async checkFile(@UploadedFile() file: any) {
+  )
+  async checkFile(@UploadedFile() file: any) {
     if (!file) {
-      throw new BadRequestException('Fayl yuborilmadi.');
+      throw new BadRequestException(
+        'Fayl yuborilmadi.',
+      );
     }
 
-    console.log('📱 Fayl qabul qilindi:', file.originalname);
+    console.log(
+      '📱 Fayl qabul qilindi:',
+      file.originalname,
+    );
 
-    const result = await this.scannerService.scanFile(file.path);
+    const result =
+      await this.scannerService.scanFile(
+        file.path,
+      );
 
     return {
       filename: file.originalname,
