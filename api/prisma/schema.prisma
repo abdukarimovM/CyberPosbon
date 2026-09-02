@@ -34,3 +34,42 @@ model Source {
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 }
+
+enum FraudCategory {
+  BANK_SCAM        // Payme/Click, bank xodimi nomidan qo'ng'iroq
+  FISHING_SMS      // Shubhali link yoki yutuq haqida SMS
+  OLX_DELIVERY     // Soxta yetkazib berish va to'lov
+  INVESTMENT_SCAM  // Soxta treyding, birja, daromad va'da qiluvchilar
+  SPAM_CALL        // Bot yoki keraksiz reklama qo'ng'iroqlari
+  OTHER            // Boshqa turdagi firibgarlik
+}
+
+model FraudNumber {
+  id            String          @id @default(uuid())
+  phoneNumber   String          @unique // E.164 formati: +998901234567
+  countryCode   String?         @default("UZ")
+  operator      String?         // Beeline, Ucell, UzMobile, Mobiuz, Humans va h.k.
+  riskScore     Int             @default(0) // 0 dan 100 gacha
+  reportsCount  Int             @default(0) // Jami tushgan shikoyatlar soni
+  isVerified    Boolean         @default(false) // Admin yoki vakolatli organ tomonidan tasdiqlanganmi
+  createdAt     DateTime        @default(now())
+  updatedAt     DateTime        @updatedAt
+
+  reports       NumberReport[]
+
+  @@index([phoneNumber])
+}
+
+model NumberReport {
+  id            String        @id @default(uuid())
+  phoneNumberId String
+  reportedBy    String        // Foydalanuvchining Telegram ID si
+  category      FraudCategory @default(OTHER)
+  comment       String?       // Qisqa izoh (masalan: "SMS kod so'radi")
+  createdAt     DateTime      @default(now())
+
+  number        FraudNumber   @relation(fields: [phoneNumberId], references: [id], onDelete: Cascade)
+
+  // Bir foydalanuvchi bitta raqam ustidan faqat bitta shikoyat qoldira olishi uchun
+  @@unique([phoneNumberId, reportedBy])
+}

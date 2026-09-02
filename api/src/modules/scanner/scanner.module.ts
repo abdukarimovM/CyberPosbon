@@ -17,8 +17,11 @@ import { FileHashService } from './file/file-hash.service';
 // Risk Engine
 import { RiskEngineService } from './risk/risk-engine.service';
 
+import { AiModule } from '../ai/ai.module'; // <-- Yangi qo'shildi
+
 @Module({
   imports: [
+    AiModule,
     // Multer fayllarni vaqtinchalik saqlash sozlamasi
     MulterModule.register({
       dest: './uploads',

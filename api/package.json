@@ -33,6 +33,7 @@
     "class-validator": "^0.15.1",
     "dotenv": "^17.4.2",
     "form-data": "^4.0.6",
+    "google-libphonenumber": "^3.2.46",
     "googleapis": "^174.0.1",
     "reflect-metadata": "^0.2.2",
     "rxjs": "^7.8.1"
@@ -44,6 +45,7 @@
     "@nestjs/schematics": "^11.0.0",
     "@nestjs/testing": "^11.0.1",
     "@types/express": "^5.0.0",
+    "@types/google-libphonenumber": "^7.4.31",
     "@types/jest": "^30.0.0",
     "@types/node": "^24.0.0",
     "@types/supertest": "^7.0.0",

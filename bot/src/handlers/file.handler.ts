@@ -13,7 +13,12 @@ import { getUserLanguage } from '../services/user.service';
 // =========================================================
 
 const waitingForFile = new Set<string>();
-const pendingFileAnalyses = new Map<string, string>();
+
+interface PendingFileSession {
+  analysisId: string;
+  fileName: string;
+}
+const pendingFileAnalyses = new Map<string, PendingFileSession>();
 
 type SupportedLang = 'uz' | 'uz_cyr' | 'ru';
 
@@ -65,9 +70,9 @@ const MESSAGES = {
     ru: '❌ Анализ файла не найден. Пожалуйста, отправьте файл заново.',
   },
   tooLargeTelegram: {
-    uz: '❌ Fayl hajmi 20 MB dan katta.\n\n📦 Telegram Bot API cheklovi tufayli faqat 20 MB gacha bo‘lgan fayllarni qabul qila olamiz.',
-    uz_cyr: '❌ Файл ҳажми 20 МБ дан катта.\n\n📦 Telegram Bot API чекловлари туфайли фақат 20 МБ гача бўлган файлларни текшириш мумкин.',
-    ru: '❌ Размер файла превышает 20 МБ.\n\n📦 Из-за ограничений Telegram Bot API поддерживаются файлы только до 20 МБ.',
+    uz: '❌ Fayl hajmi 20 MB dan katta.\n\n📦 Telegram Bot API cheklovi tufayli faqat 20 MB gacha bo‘lgan fayllarni qabul qila olamiz.\n\n💡 Odatda fishing va firibgarlar tarqatadigan soxta APK ilovalar 5–15 MB atrofida bo‘ladi.',
+    uz_cyr: '❌ Файл ҳажми 20 МБ дан катта.\n\n📦 Telegram Bot API чекловлари туфайли фақат 20 МБ гача бўлган файлларни текшириш мумкин.\n\n💡 Одатда фишинг ва фирибгарлар тарқатадиган сохта APK иловалар 5–15 МБ атрофида бўлади.',
+    ru: '❌ Размер файла превышает 20 МБ.\n\n📦 Из-за ограничений Telegram Bot API поддерживаются файлы только до 20 МБ.\n\n💡 Обычно вредоносные и фишинговые APK-файлы весят от 5 до 15 МБ.',
   },
   tooLargeBackend: {
     uz: '❌ Fayl hajmi juda katta.\n\n📦 Maksimal ruxsat etilgan hajm: 100 MB.',
@@ -98,10 +103,11 @@ function formatResultText(lang: SupportedLang, result: any, fileName?: string): 
 
   const labels = {
     uz: {
-      title: '🔍 Tekshiruv natijasi',
-      file: fileName ? `📄 Fayl: ${fileName}\n` : '',
-      level: '🛡️ Xavf darajasi:',
-      score: '🎯 Xavf bali:',
+      title: '🔍 *Tekshiruv natijasi:*',
+      file: fileName ? `📄 *Fayl:* \`${fileName}\`\n` : '',
+      level: '🛡️ *Xavf darajasi:*',
+      score: '🎯 *Xavf bali:*',
+      aiTitle: '🤖 *AI Ekspert xulosasi:*',
       statuses: {
         dangerous: '🔴 XAVFLI',
         suspicious: '🟡 SHUBHALI',
@@ -110,10 +116,11 @@ function formatResultText(lang: SupportedLang, result: any, fileName?: string): 
       },
     },
     uz_cyr: {
-      title: '🔎 Текширув натижаси',
-      file: fileName ? `📄 Файл: ${fileName}\n` : '',
-      level: '🛡 Хавф даражаси:',
-      score: '🎯 Хавф бали:',
+      title: '🔎 *Текширув натижаси:*',
+      file: fileName ? `📄 *Файл:* \`${fileName}\`\n` : '',
+      level: '🛡 *Хавф даражаси:*',
+      score: '🎯 *Хавф бали:*',
+      aiTitle: '🤖 *AI Эксперт хулосаси:*',
       statuses: {
         dangerous: '🔴 ХАВФЛИ',
         suspicious: '🟡 ШУБҲАЛИ',
@@ -122,10 +129,11 @@ function formatResultText(lang: SupportedLang, result: any, fileName?: string): 
       },
     },
     ru: {
-      title: '🔎 Результат проверки',
-      file: fileName ? `📄 Файл: ${fileName}\n` : '',
-      level: '🛡 Уровень риска:',
-      score: '🎯 Балл риска:',
+      title: '🔎 *Результат проверки:*',
+      file: fileName ? `📄 *Файл:* \`${fileName}\`\n` : '',
+      level: '🛡 *Уровень риска:*',
+      score: '🎯 *Балл риска:*',
+      aiTitle: '🤖 *Заключение AI Эксперта:*',
       statuses: {
         dangerous: '🔴 ОПАСНЫЙ',
         suspicious: '🟡 ПОДОЗРИТЕЛЬНЫЙ',
@@ -138,7 +146,15 @@ function formatResultText(lang: SupportedLang, result: any, fileName?: string): 
   const l = labels[lang];
   const statusText = l.statuses[status as keyof typeof l.statuses] || l.statuses.unknown;
 
-  return `${l.title}\n\n${l.file}${l.level} ${statusText}\n${l.score} ${score}${detections}`;
+  let text = `${l.title}\n\n${l.file}${l.level} ${statusText}\n${l.score} ${score}/100${detections}`;
+
+  // 🤖 AI Ekspert xulosasi bloki
+  const aiSummary = result?.aiSummary;
+  if (aiSummary) {
+    text += `\n\n${l.aiTitle}\n${aiSummary}`;
+  }
+
+  return text;
 }
 
 // =========================================================
@@ -192,9 +208,12 @@ export function registerFileHandler(bot: Telegraf) {
       waitingForFile.delete(telegramId);
       await ctx.reply(
         MESSAGES.tooLargeTelegram[lang],
-        Markup.inlineKeyboard([
-          [Markup.button.callback(MESSAGES.mainMenuBtn[lang], 'main_menu')],
-        ])
+        {
+          parse_mode: 'Markdown',
+          ...Markup.inlineKeyboard([
+            [Markup.button.callback(MESSAGES.mainMenuBtn[lang], 'main_menu')],
+          ]),
+        }
       );
       return;
     }
@@ -224,6 +243,7 @@ export function registerFileHandler(bot: Telegraf) {
         filename: fileName,
         contentType: document.mime_type || 'application/octet-stream',
       });
+      form.append('language', lang === 'uz' ? 'uz_lat' : lang);
 
       const backendResponse = await api.post('/scanner/file/check', form, {
         headers: { ...form.getHeaders() },
@@ -235,7 +255,10 @@ export function registerFileHandler(bot: Telegraf) {
 
       // Agar tahlil jarayonda bo'lsa (pending)
       if (result.pending === true && result.analysisId) {
-        pendingFileAnalyses.set(telegramId, result.analysisId);
+        pendingFileAnalyses.set(telegramId, {
+          analysisId: result.analysisId,
+          fileName,
+        });
 
         await ctx.reply(
           MESSAGES.vtPending[lang],
@@ -249,7 +272,12 @@ export function registerFileHandler(bot: Telegraf) {
 
       // Agar natija darhol tayyor bo'lsa
       const finalMsg = formatResultText(lang, result, fileName);
-      await ctx.reply(finalMsg);
+      await ctx.reply(finalMsg, {
+        parse_mode: 'Markdown',
+        ...Markup.inlineKeyboard([
+          [Markup.button.callback(MESSAGES.mainMenuBtn[lang], 'main_menu')],
+        ]),
+      });
 
     } catch (error: any) {
       console.error('❌ File receive error:', error);
@@ -269,7 +297,9 @@ export function registerFileHandler(bot: Telegraf) {
         return;
       }
 
-      await ctx.reply(MESSAGES.error[lang]);
+      await ctx.reply(MESSAGES.error[lang], Markup.inlineKeyboard([
+        [Markup.button.callback(MESSAGES.mainMenuBtn[lang], 'main_menu')],
+      ]));
     } finally {
       // Temp faylni tozalash
       if (fs.existsSync(tempFilePath)) {
@@ -290,9 +320,11 @@ export function registerFileHandler(bot: Telegraf) {
       const rawLang = await getUserLanguage(telegramId);
       const lang = resolveLanguage(rawLang);
 
-      const analysisId = pendingFileAnalyses.get(telegramId);
-      if (!analysisId) {
-        await ctx.reply(MESSAGES.notFound[lang]);
+      const session = pendingFileAnalyses.get(telegramId);
+      if (!session || !session.analysisId) {
+        await ctx.reply(MESSAGES.notFound[lang], Markup.inlineKeyboard([
+          [Markup.button.callback(MESSAGES.mainMenuBtn[lang], 'main_menu')],
+        ]));
         return;
       }
 
@@ -314,7 +346,11 @@ export function registerFileHandler(bot: Telegraf) {
 
       for (let attempt = 1; attempt <= maxAttempts; attempt++) {
         try {
-          const response = await api.post('/scanner/file/check-status', { analysisId });
+          const response = await api.post('/scanner/file/check-status', {
+            analysisId: session.analysisId,
+            fileName: session.fileName,
+            language: lang === 'uz' ? 'uz_lat' : lang,
+          });
           const result = response.data?.result;
 
           if (result && result.status !== 'unknown') {
@@ -347,9 +383,8 @@ export function registerFileHandler(bot: Telegraf) {
 
       // Muvaffaqiyatli tugadi
       pendingFileAnalyses.delete(telegramId);
-      const resultMessage = formatResultText(lang, finalResult);
+      const resultMessage = formatResultText(lang, finalResult, session.fileName);
 
-      // ✅ TUZATILDI: Natija ostiga "Asosiy menyu" tugmasi qo'shildi
       await ctx.telegram.editMessageText(
         chatId,
         messageId,
@@ -367,7 +402,9 @@ export function registerFileHandler(bot: Telegraf) {
       console.error('❌ File status error:', error);
       const telegramId = ctx.from?.id.toString();
       const lang = resolveLanguage(telegramId ? await getUserLanguage(telegramId) : undefined);
-      await ctx.reply(MESSAGES.error[lang]);
+      await ctx.reply(MESSAGES.error[lang], Markup.inlineKeyboard([
+        [Markup.button.callback(MESSAGES.mainMenuBtn[lang], 'main_menu')],
+      ]));
     }
   });
 }

@@ -7,6 +7,7 @@ import { PrismaModule } from './prisma/prisma.module';
 import { SourceModule } from './modules/source/source.module';
 import { ScannerModule } from './modules/scanner/scanner.module';
 import { AiModule } from './modules/ai/ai.module';
+import { PhoneModule } from './modules/phone/phone.module';
 
 @Module({
   imports: [
@@ -19,6 +20,7 @@ import { AiModule } from './modules/ai/ai.module';
     SourceModule,
     ScannerModule,
     AiModule,
+    PhoneModule,
   ],
   controllers: [AppController],
   providers: [AppService],

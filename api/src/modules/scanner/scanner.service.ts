@@ -1,15 +1,19 @@
-import { Injectable } from '@nestjs/common';
+import { Injectable, Logger } from '@nestjs/common';
 import { UrlscanScanner } from './providers/urlscan.scanner';
 import { ScannerResult } from './interfaces/scanner-result.interface';
 import { VirusTotalFileScanner } from './providers/virustotal-file.scanner';
 import { RiskEngineService } from './risk/risk-engine.service';
+import { AiService } from '../ai/ai.service';
 
 @Injectable()
 export class ScannerService {
+  private readonly logger = new Logger(ScannerService.name);
+
   constructor(
     private readonly riskEngine: RiskEngineService,
     private readonly urlscanScanner: UrlscanScanner,
     private readonly virusTotalFileScanner: VirusTotalFileScanner,
+    private readonly aiService: AiService,
   ) { }
 
   /**
@@ -20,13 +24,22 @@ export class ScannerService {
     scanners: Array<{
       scan: (url: string) => Promise<ScannerResult>;
     }>,
-  ): Promise<ScannerResult[]> {
-    return Promise.all(
+    language: string = 'uz_lat',
+  ): Promise<{
+    results: ScannerResult[];
+    status: ScannerResult['status'];
+    risk: {
+      score: number;
+      level: 'safe' | 'suspicious' | 'dangerous' | 'unknown';
+    };
+    aiSummary: string;
+  }> {
+    const results = await Promise.all(
       scanners.map(async (scanner): Promise<ScannerResult> => {
         try {
           return await scanner.scan(url);
         } catch (error) {
-          console.error('Scanner error:', error);
+          this.logger.error('Scanner error:', error);
           return {
             provider: 'unknown',
             status: 'unknown',
@@ -35,6 +48,39 @@ export class ScannerService {
         }
       }),
     );
+
+    const status = this.calculateStatus(results);
+    const score = this.calculateScore(results);
+    const level = this.getRiskLevel(score, status);
+
+    const detections = results
+      .filter((r) => r.status === 'dangerous' || r.status === 'suspicious')
+      .map((r) => `${r.provider}: ${r.message}`);
+
+    let aiSummary = '';
+    try {
+      aiSummary = await this.aiService.explainThreat({
+        target: url,
+        type: 'url',
+        riskLevel: level,
+        riskScore: score,
+        rawDetections: detections,
+        language,
+      });
+    } catch (err) {
+      this.logger.error('AI xulosasini olishda xatolik:', err);
+      aiSummary = 'AI xulosasini shakllantirib bo‘lmadi.';
+    }
+
+    return {
+      results,
+      status,
+      risk: {
+        score,
+        level,
+      },
+      aiSummary,
+    };
   }
 
   calculateStatus(results: ScannerResult[]): ScannerResult['status'] {
@@ -57,12 +103,11 @@ export class ScannerService {
    */
   async startUrlscanDeep(url: string): Promise<ScannerResult> {
     try {
-      console.log('🔬 URLScan deep scan boshlandi:', url);
+      this.logger.log(`🔬 URLScan deep scan boshlandi: ${url}`);
       const smartResult = await this.urlscanScanner.smartScan(url);
-      console.log('🔬 URLScan smart result:', smartResult.message);
       return smartResult;
     } catch (error) {
-      console.error('❌ URLScan deep scan error:', error);
+      this.logger.error('❌ URLScan deep scan error:', error);
       return {
         provider: 'urlscan',
         status: 'unknown',
@@ -74,11 +119,35 @@ export class ScannerService {
     }
   }
 
-  calculateFinalRisk(results: ScannerResult[], urlscanResult: ScannerResult) {
+  async calculateFinalRisk(
+    results: ScannerResult[],
+    urlscanResult: ScannerResult,
+    targetUrl: string = '',
+    language: string = 'uz_lat',
+  ) {
     const allResults = [...results, urlscanResult];
     const status = this.riskEngine.analyze(allResults);
     const score = this.riskEngine.calculateScore(allResults);
     const level = this.riskEngine.getRiskLevel(score, status);
+
+    const detections = allResults
+      .filter((r) => r.status === 'dangerous' || r.status === 'suspicious')
+      .map((r) => `${r.provider}: ${r.message}`);
+
+    let aiSummary = '';
+    try {
+      aiSummary = await this.aiService.explainThreat({
+        target: targetUrl || 'Tekshirilgan havola',
+        type: 'url',
+        riskLevel: level,
+        riskScore: score,
+        rawDetections: detections,
+        language,
+      });
+    } catch (err) {
+      this.logger.error('AI izohida xatolik:', err);
+      aiSummary = 'AI xulosasini shakllantirib bo‘lmadi.';
+    }
 
     return {
       status,
@@ -87,12 +156,15 @@ export class ScannerService {
         level,
       },
       results: allResults,
+      aiSummary,
     };
   }
 
   async pollUrlscanDeep(
     resultUrl: string,
     results: ScannerResult[] = [],
+    originalTargetUrl: string = '',
+    language: string = 'uz_lat',
   ): Promise<{
     result: ScannerResult;
     finalRisk: {
@@ -102,19 +174,25 @@ export class ScannerService {
         level: 'safe' | 'suspicious' | 'dangerous' | 'unknown';
       };
       results: ScannerResult[];
+      aiSummary: string;
     };
   }> {
     try {
-      console.log('🔄 URLScan deep result tekshirilmoqda:', resultUrl);
+      this.logger.log(`🔄 URLScan deep result tekshirilmoqda: ${resultUrl}`);
       const urlscanResult = await this.urlscanScanner.pollResult(resultUrl);
 
-      const finalRisk = this.calculateFinalRisk(results, urlscanResult);
+      const finalRisk = await this.calculateFinalRisk(
+        results,
+        urlscanResult,
+        originalTargetUrl,
+        language,
+      );
       return {
         result: urlscanResult,
         finalRisk,
       };
     } catch (error) {
-      console.error('❌ URLScan deep polling error:', error);
+      this.logger.error('❌ URLScan deep polling error:', error);
       const errorResult: ScannerResult = {
         provider: 'urlscan',
         status: 'unknown',
@@ -124,7 +202,12 @@ export class ScannerService {
         },
       };
 
-      const finalRisk = this.calculateFinalRisk(results, errorResult);
+      const finalRisk = await this.calculateFinalRisk(
+        results,
+        errorResult,
+        originalTargetUrl,
+        language,
+      );
       return {
         result: errorResult,
         finalRisk,
@@ -135,8 +218,8 @@ export class ScannerService {
   /**
    * Faylni (APK, EXE va b.) tekshirish
    */
-  async scanFile(filePath: string) {
-    console.log('📱 Fayl tekshiruvi boshlandi:', filePath);
+  async scanFile(filePath: string, language: string = 'uz_lat') {
+    this.logger.log(`📱 Fayl tekshiruvi boshlandi: ${filePath}`);
 
     try {
       const result = await this.virusTotalFileScanner.scan(filePath);
@@ -146,6 +229,28 @@ export class ScannerService {
       const raw = result.raw && typeof result.raw === 'object' ? result.raw : {};
       const hasReport = 'report' in raw;
       const isPending = 'pending' in raw ? Boolean((raw as any).pending) : false;
+
+      const fileName = filePath.split('/').pop() || 'fayl';
+      const detections = result.status === 'dangerous' || result.status === 'suspicious'
+        ? [result.message]
+        : [];
+
+      let aiSummary = '';
+      if (!isPending) {
+        try {
+          aiSummary = await this.aiService.explainThreat({
+            target: fileName,
+            type: 'file',
+            riskLevel: level,
+            riskScore: score,
+            rawDetections: detections,
+            language,
+          });
+        } catch (err) {
+          this.logger.error('File AI tahlilida xatolik:', err);
+          aiSummary = 'AI xulosasini shakllantirib bo‘lmadi.';
+        }
+      }
 
       return {
         status: result.status,
@@ -161,9 +266,10 @@ export class ScannerService {
         analysisId: (raw as any)?.analysisId ?? null,
         pending: isPending,
         result,
+        aiSummary,
       };
     } catch (error) {
-      console.error('❌ File scan error:', error);
+      this.logger.error('❌ File scan error:', error);
       return {
         status: 'unknown' as const,
         risk: {
@@ -180,6 +286,7 @@ export class ScannerService {
           status: 'unknown' as const,
           message: 'Fayl skanerida kutilmagan xatolik.',
         },
+        aiSummary: 'Fayl xatosi tufayli AI tahlil qila olmadi.',
       };
     }
   }
@@ -187,9 +294,9 @@ export class ScannerService {
   /**
    * Asinxron fayl tahlili holatini olish
    */
-  async checkFileAnalysis(analysisId: string): Promise<ScannerResult> {
+  async checkFileAnalysis(analysisId: string, fileName: string = 'fayl', language: string = 'uz_lat'): Promise<ScannerResult & { aiSummary?: string }> {
     try {
-      console.log('🔄 VirusTotal fayl tahlili tekshirilmoqda:', analysisId);
+      this.logger.log(`🔄 VirusTotal fayl tahlili tekshirilmoqda: ${analysisId}`);
       const analysis = await this.virusTotalFileScanner.getAnalysis(analysisId);
       const status = analysis?.data?.attributes?.status;
 
@@ -220,6 +327,23 @@ export class ScannerService {
         riskStatus = 'safe';
       }
 
+      const score = riskStatus === 'dangerous' ? 85 : riskStatus === 'suspicious' ? 45 : 0;
+      const level = this.riskEngine.getRiskLevel(score, riskStatus);
+
+      let aiSummary = '';
+      try {
+        aiSummary = await this.aiService.explainThreat({
+          target: fileName,
+          type: 'file',
+          riskLevel: level,
+          riskScore: score,
+          rawDetections: malicious > 0 ? [`${malicious} ta antivirus zararli deb topdi`] : [],
+          language,
+        });
+      } catch (err) {
+        aiSummary = 'AI xulosasini shakllantirib bo‘lmadi.';
+      }
+
       return {
         provider: 'virustotal-file',
         status: riskStatus,
@@ -236,9 +360,10 @@ export class ScannerService {
           stats,
           analysis,
         },
+        aiSummary,
       };
     } catch (error) {
-      console.error('❌ File analysis check error:', error);
+      this.logger.error('❌ File analysis check error:', error);
       return {
         provider: 'virustotal-file',
         status: 'unknown',

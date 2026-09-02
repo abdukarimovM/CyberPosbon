@@ -49,6 +49,11 @@ const I18N = {
     uz_cyr: `🔎 Манба текширилмоқда...\n\n🌐 Домен: \`${domain}\``,
     ru: `🔎 Источник проверяется...\n\n🌐 Домен: \`${domain}\``,
   }),
+  aiTitle: {
+    uz_lat: "🤖 *AI Ekspert xulosasi:*",
+    uz_cyr: "🤖 *AI Эксперт хулосаси:*",
+    ru: "🤖 *Заключение AI Эксперта:*",
+  },
   buttons: {
     deepScan: {
       uz_lat: "🔬 Chuqur tahlil",
@@ -218,12 +223,16 @@ export function registerSourceHandler(bot: Telegraf) {
     try {
       const waitMsg = await ctx.reply(I18N.checking(domain)[lang], { parse_mode: "Markdown" });
 
-      const response = await api.post("/scanner/check", { url: validUrl });
+      const response = await api.post("/scanner/check", {
+        url: validUrl,
+        language: lang,
+      });
       const result = response.data;
 
       const riskLevel = result?.risk?.level || result?.status || "unknown";
       const riskScore = result?.risk?.score ?? 0;
       const scannerResults = Array.isArray(result?.results) ? result.results : [];
+      const aiSummary = result?.aiSummary;
 
       deepScanSessions.set(telegramId, {
         targetUrl: validUrl,
@@ -239,6 +248,11 @@ export function registerSourceHandler(bot: Telegraf) {
         `🌐 *Domen:* \`${domain}\`\n` +
         `🛡️ *Xavf darajasi:* ${badge}\n` +
         `🎯 *Xavf bali:* ${riskScore}/100\n`;
+
+      // 🤖 AI Ekspert xulosasi bloki
+      if (aiSummary) {
+        message += `\n${I18N.aiTitle[lang]}\n${aiSummary}\n`;
+      }
 
       const buttons: any[][] = [];
 
@@ -294,13 +308,14 @@ export function registerSourceHandler(bot: Telegraf) {
 
       const response = await api.post("/scanner/deep-scan", {
         url: session.targetUrl,
+        language: lang,
       });
 
       const result = response.data;
       const deepScan = result?.deepScan || result?.result?.raw || {};
       const resultUrl = deepScan?.resultUrl || result?.result?.raw?.resultUrl;
 
-      // Agar URLScan xatolik bilan qaytsa (masalan, HTTP 400)
+      // Agar URLScan xatolik bilan qaytsa
       if (!resultUrl && (result?.message?.includes("xatosi") || result?.result?.message?.includes("xatosi"))) {
         await ctx.telegram.editMessageText(
           ctx.chat!.id,
@@ -333,11 +348,16 @@ export function registerSourceHandler(bot: Telegraf) {
             : readyStatus;
 
         const badge = getStatusBadge(finalStatus);
-        const readyMessage =
+        let readyMessage =
           `🔬 *Chuqur tahlil natijasi:*\n\n` +
           `🌐 *Manzil:* ${session.targetUrl}\n` +
           `🛡️ *Yakuniy holati:* ${badge}\n\n` +
           `${result?.message || result?.result?.message || ""}`;
+
+        const aiSummary = result?.aiSummary || result?.finalRisk?.aiSummary;
+        if (aiSummary) {
+          readyMessage += `\n\n${I18N.aiTitle[lang]}\n${aiSummary}`;
+        }
 
         await ctx.telegram.editMessageText(
           ctx.chat!.id,
@@ -400,6 +420,8 @@ export function registerSourceHandler(bot: Telegraf) {
       const response = await api.post("/scanner/deep-scan/status", {
         resultUrl: session.resultUrl,
         results: session.scannerResults || [],
+        targetUrl: session.targetUrl,
+        language: lang,
       });
 
       const data = response.data;
@@ -435,13 +457,19 @@ export function registerSourceHandler(bot: Telegraf) {
 
       const finalScore = Math.max(session.initialScore || 0, data?.finalRisk?.risk?.score ?? 0);
       const badge = getStatusBadge(finalStatus);
+      const aiSummary = data?.finalRisk?.aiSummary || data?.aiSummary;
 
-      const message =
+      let message =
         `🔬 *Chuqur tahlil natijasi:*\n\n` +
         `🌐 *Manzil:* ${session.targetUrl}\n` +
         `🛡️ *Yakuniy xavf darajasi:* ${badge}\n` +
         `🎯 *Xavf bali:* ${finalScore}/100\n\n` +
         `${result?.message || ""}`;
+
+      // AI xulosasi
+      if (aiSummary) {
+        message += `\n\n${I18N.aiTitle[lang]}\n${aiSummary}`;
+      }
 
       if (chatId && messageId) {
         await ctx.telegram.editMessageText(

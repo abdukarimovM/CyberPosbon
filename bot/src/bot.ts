@@ -12,6 +12,7 @@ import { registerAdminHandler } from './handlers/admin.handler';
 import { registerSourceHandler } from './handlers/source.handler';
 import { registerFileHandler } from './handlers/file.handler';
 import { registerAiHandler } from './handlers/ai.handler';
+import { registerPhoneHandler } from './handlers/phone.handler';
 
 // Servislar
 import { getUserLanguage } from './services/user.service';
@@ -42,6 +43,7 @@ registerAdminHandler(bot);
 registerSourceHandler(bot);
 registerFileHandler(bot);
 registerAiHandler(bot);
+registerPhoneHandler(bot);
 
 // =========================================================
 // ⏳ HALI ISHLAB CHIQILAYOTGAN BO'LIMLAR (PLACEHOLDER)

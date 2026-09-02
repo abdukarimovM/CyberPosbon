@@ -34,20 +34,26 @@ interface UploadedFileType {
 
 interface CheckUrlDto {
   url: string;
+  language?: string;
 }
 
 interface DeepScanDto {
   url: string;
+  language?: string;
   results?: ScannerResult[];
 }
 
 interface DeepScanStatusDto {
   resultUrl: string;
+  targetUrl?: string;
+  language?: string;
   results?: ScannerResult[];
 }
 
 interface CheckFileStatusDto {
   analysisId: string;
+  fileName?: string;
+  language?: string;
 }
 
 @Controller('scanner')
@@ -68,24 +74,23 @@ export class ScannerController {
       throw new BadRequestException('Tekshirish uchun URL yuborilmadi.');
     }
 
-    const results = await this.scannerService.scanUrl(body.url, [
-      this.googleScanner,
-      this.urlhausScanner,
-      this.virusTotalScanner,
-    ]);
-
-    const status = this.riskEngine.analyze(results);
-    const score = this.riskEngine.calculateScore(results);
-    const riskLevel = this.scannerService.getRiskLevel(score, status);
+    // ScannerService o'zi tekshiradi, riskni hisoblaydi va AI xulosasini generatsiya qiladi
+    const scanResult = await this.scannerService.scanUrl(
+      body.url,
+      [
+        this.googleScanner,
+        this.urlhausScanner,
+        this.virusTotalScanner,
+      ],
+      body.language || 'uz_lat',
+    );
 
     return {
       url: body.url,
-      status,
-      risk: {
-        score,
-        level: riskLevel,
-      },
-      results,
+      status: scanResult.status,
+      risk: scanResult.risk,
+      results: scanResult.results,
+      aiSummary: scanResult.aiSummary,
     };
   }
 
@@ -125,6 +130,8 @@ export class ScannerController {
     return this.scannerService.pollUrlscanDeep(
       body.resultUrl,
       body.results || [],
+      body.targetUrl || '',
+      body.language || 'uz_lat',
     );
   }
 
@@ -137,7 +144,10 @@ export class ScannerController {
       },
     }),
   )
-  async checkFile(@UploadedFile() file: UploadedFileType) {
+  async checkFile(
+    @UploadedFile() file: UploadedFileType,
+    @Body('language') language?: string,
+  ) {
     if (!file) {
       throw new BadRequestException('Fayl yuklanmadi.');
     }
@@ -145,7 +155,10 @@ export class ScannerController {
     console.log(`📱 Fayl qabul qilindi: ${file.originalname} (${file.size} bytes)`);
 
     try {
-      const result = await this.scannerService.scanFile(file.path);
+      const result = await this.scannerService.scanFile(
+        file.path,
+        language || 'uz_lat',
+      );
 
       return {
         filename: file.originalname,
@@ -170,7 +183,11 @@ export class ScannerController {
       throw new BadRequestException('analysisId parametri yuborilmadi.');
     }
 
-    const result = await this.scannerService.checkFileAnalysis(body.analysisId);
+    const result = await this.scannerService.checkFileAnalysis(
+      body.analysisId,
+      body.fileName || 'fayl',
+      body.language || 'uz_lat',
+    );
 
     if (result.status === 'unknown') {
       return {
@@ -194,6 +211,7 @@ export class ScannerController {
         level,
       },
       message: result.message,
+      aiSummary: result.aiSummary,
       result,
     };
   }
