@@ -9,895 +9,365 @@ import { api } from '../api/api.client';
 import { getUserLanguage } from '../services/user.service';
 
 // =========================================================
-// 📦 FAYL YUBORISH HOLATI
+// 📦 HOLATLAR VA MA'LUMOTLAR STRUKTURASI
 // =========================================================
 
 const waitingForFile = new Set<string>();
-
-// Telegram ID → VirusTotal analysis ID
 const pendingFileAnalyses = new Map<string, string>();
 
+type SupportedLang = 'uz' | 'uz_cyr' | 'ru';
+
+// 20 MB Telegram Bot API yuklab olish cheklovi
+const MAX_TELEGRAM_FILE_SIZE = 20 * 1024 * 1024;
+
+const MESSAGES = {
+  sendPrompt: {
+    uz: '📱 Tekshirmoqchi bo‘lgan fayl yoki ilovani yuboring:',
+    uz_cyr: '📱 Текширмоқчи бўлган файл ёки иловани юборинг:',
+    ru: '📱 Отправьте файл или приложение, которое хотите проверить:',
+  },
+  mainMenuBtn: {
+    uz: '⬅️ Asosiy menyu',
+    uz_cyr: '⬅️ Асосий меню',
+    ru: '⬅️ Главное меню',
+  },
+  checkResultBtn: {
+    uz: '🔄 Natijani tekshirish',
+    uz_cyr: '🔄 Натижани текшириш',
+    ru: '🔄 Проверить результат',
+  },
+  fileReceived: (name: string, lang: SupportedLang) => {
+    const text = {
+      uz: `📦 Fayl qabul qilindi.\n\n📄 Nomi: ${name}\n⏳ Tekshiruvga tayyorlanmoqda...`,
+      uz_cyr: `📦 Файл қабул қилинди.\n\n📄 Номи: ${name}\n⏳ Текширувга тайёрланмоқда...`,
+      ru: `📦 Файл принят.\n\n📄 Имя: ${name}\n⏳ Подготовка к проверке...`,
+    };
+    return text[lang];
+  },
+  vtPending: {
+    uz: '⏳ Fayl VirusTotal tahliliga yuborildi.\n\nTekshiruv davom etmoqda.\n\n🕐 20–30 soniya kutib, «Natijani tekshirish» tugmasini bosing.',
+    uz_cyr: '⏳ Файл VirusTotal таҳлилига юборилди.\n\nТекширув давом этмоқда.\n\n🕐 20–30 сония кутиб, «Натижани текшириш» тугмасини босинг.',
+    ru: '⏳ Файл отправлен на анализ VirusTotal.\n\nПроверка ещё выполняется.\n\n🕐 Подождите 20–30 секунд и нажмите «Проверить результат».',
+  },
+  vtChecking: {
+    uz: '⏳ VirusTotal faylni tahlil qilmoqda...\n\n🕐 Iltimos, kuting.',
+    uz_cyr: '⏳ VirusTotal файлни таҳлил қилмоқда...\n\n🕐 Илтимос, кутинг.',
+    ru: '⏳ VirusTotal анализирует файл...\n\n🕐 Пожалуйста, подождите.',
+  },
+  vtStillPending: {
+    uz: '⏳ Tahlil hali davom etmoqda.\n\n🕐 Yana bir necha soniya kuting va qayta tekshiring.',
+    uz_cyr: '⏳ Таҳлил ҳали давом этмоқда.\n\n🕐 Яна бир неча сония кутинг ва қайта текширинг.',
+    ru: '⏳ Анализ всё ещё выполняется.\n\n🕐 Подождите ещё немного и проверьте снова.',
+  },
+  notFound: {
+    uz: '❌ Fayl tahlili topilmadi. Iltimos, faylni qayta yuboring.',
+    uz_cyr: '❌ Файл таҳлили топилмади. Илтимос, файлни қайта юборинг.',
+    ru: '❌ Анализ файла не найден. Пожалуйста, отправьте файл заново.',
+  },
+  tooLargeTelegram: {
+    uz: '❌ Fayl hajmi 20 MB dan katta.\n\n📦 Telegram Bot API cheklovi tufayli faqat 20 MB gacha bo‘lgan fayllarni qabul qila olamiz.',
+    uz_cyr: '❌ Файл ҳажми 20 МБ дан катта.\n\n📦 Telegram Bot API чекловлари туфайли фақат 20 МБ гача бўлган файлларни текшириш мумкин.',
+    ru: '❌ Размер файла превышает 20 МБ.\n\n📦 Из-за ограничений Telegram Bot API поддерживаются файлы только до 20 МБ.',
+  },
+  tooLargeBackend: {
+    uz: '❌ Fayl hajmi juda katta.\n\n📦 Maksimal ruxsat etilgan hajm: 100 MB.',
+    uz_cyr: '❌ Файл ҳажми жуда катта.\n\n📦 Максимал рухсат этилган ҳажм: 100 МБ.',
+    ru: '❌ Файл слишком большой.\n\n📦 Максимальный размер файла: 100 МБ.',
+  },
+  error: {
+    uz: '❌ Faylni tekshirishda xatolik yuz berdi.',
+    uz_cyr: '❌ Файлни текширишда хатолик юз берди.',
+    ru: '❌ Произошла ошибка при проверке файла.',
+  },
+};
+
 // =========================================================
-// 🔧 YORDAMCHI FUNKSIYA
+// 🔧 YORDAMCHI FUNKSIYALAR
 // =========================================================
 
-function sleep(ms: number): Promise<void> {
-  return new Promise((resolve) =>
-    setTimeout(resolve, ms),
-  );
+function resolveLanguage(rawLang: string | undefined): SupportedLang {
+  if (rawLang === 'ru') return 'ru';
+  if (rawLang === 'uz_cyr') return 'uz_cyr';
+  return 'uz';
+}
+
+function formatResultText(lang: SupportedLang, result: any, fileName?: string): string {
+  const status = result?.status || 'unknown';
+  const score = result?.score ?? result?.risk?.score ?? result?.raw?.score ?? 0;
+  const detections = result?.detections ? `\n📊 Aniqlangan xavflar: ${result.detections}` : '';
+
+  const labels = {
+    uz: {
+      title: '🔍 Tekshiruv natijasi',
+      file: fileName ? `📄 Fayl: ${fileName}\n` : '',
+      level: '🛡️ Xavf darajasi:',
+      score: '🎯 Xavf bali:',
+      statuses: {
+        dangerous: '🔴 XAVFLI',
+        suspicious: '🟡 SHUBHALI',
+        safe: '🟢 XAVFSIZ',
+        unknown: '⚪ NOANIQ',
+      },
+    },
+    uz_cyr: {
+      title: '🔎 Текширув натижаси',
+      file: fileName ? `📄 Файл: ${fileName}\n` : '',
+      level: '🛡 Хавф даражаси:',
+      score: '🎯 Хавф бали:',
+      statuses: {
+        dangerous: '🔴 ХАВФЛИ',
+        suspicious: '🟡 ШУБҲАЛИ',
+        safe: '🟢 ХАВФСИЗ',
+        unknown: '⚪ НОМАЪЛУМ',
+      },
+    },
+    ru: {
+      title: '🔎 Результат проверки',
+      file: fileName ? `📄 Файл: ${fileName}\n` : '',
+      level: '🛡 Уровень риска:',
+      score: '🎯 Балл риска:',
+      statuses: {
+        dangerous: '🔴 ОПАСНЫЙ',
+        suspicious: '🟡 ПОДОЗРИТЕЛЬНЫЙ',
+        safe: '🟢 БЕЗОПАСНЫЙ',
+        unknown: '⚪ НЕИЗВЕСТНО',
+      },
+    },
+  };
+
+  const l = labels[lang];
+  const statusText = l.statuses[status as keyof typeof l.statuses] || l.statuses.unknown;
+
+  return `${l.title}\n\n${l.file}${l.level} ${statusText}\n${l.score} ${score}${detections}`;
 }
 
 // =========================================================
 // 📱 FILE HANDLER
 // =========================================================
 
-export function registerFileHandler(
-  bot: Telegraf,
-) {
+export function registerFileHandler(bot: Telegraf) {
 
-  // =========================================================
-  // 📱 FAYL / ILOVANI TEKSHIRISH TUGMASI
-  // =========================================================
-
+  // 1. Fayl tekshirish tugmasi
   bot.action('check_file', async (ctx) => {
     try {
       try {
         await ctx.answerCbQuery();
       } catch (error) {
-        console.log(
-          'ℹ️ Telegram callback query eskirgan:',
-          error instanceof Error ? error.message : error,
-        );
+        console.log('ℹ️ Callback query eskirgan:', error instanceof Error ? error.message : error);
       }
 
-      const telegramId =
-        ctx.from.id.toString();
-
+      const telegramId = ctx.from.id.toString();
       waitingForFile.add(telegramId);
 
-      const language =
-        await getUserLanguage(
-          telegramId,
-        );
-
-      if (language === 'ru') {
-        await ctx.reply(
-          '📱 Отправьте файл или приложение, которое хотите проверить:',
-          Markup.inlineKeyboard([
-            [
-              Markup.button.callback(
-                '⬅️ Главное меню',
-                'main_menu',
-              ),
-            ],
-          ]),
-        );
-
-        return;
-      }
-
-      if (language === 'uz_cyr') {
-        await ctx.reply(
-          '📱 Текширмоқчи бўлган файл ёки иловани юборинг:',
-          Markup.inlineKeyboard([
-            [
-              Markup.button.callback(
-                '⬅️ Асосий меню',
-                'main_menu',
-              ),
-            ],
-          ]),
-        );
-
-        return;
-      }
+      const rawLang = await getUserLanguage(telegramId);
+      const lang = resolveLanguage(rawLang);
 
       await ctx.reply(
-        '📱 Tekshirmoqchi bo‘lgan fayl yoki ilovani yuboring:',
+        MESSAGES.sendPrompt[lang],
         Markup.inlineKeyboard([
-          [
-            Markup.button.callback(
-              '⬅️ Asosiy menyu',
-              'main_menu',
-            ),
-          ],
-        ]),
+          [Markup.button.callback(MESSAGES.mainMenuBtn[lang], 'main_menu')],
+        ])
       );
-
     } catch (error) {
-      console.error(
-        '❌ File request error:',
-        error,
-      );
+      console.error('❌ File request error:', error);
     }
   });
 
-  // =========================================================
-  // 📦 TELEGRAMDAN FAYL QABUL QILISH
-  // =========================================================
-
+  // 2. Telegramdan fayl qabul qilish
   bot.on('document', async (ctx) => {
-
-    const telegramId =
-      ctx.from.id.toString();
-
-    const language =
-      await getUserLanguage(
-        telegramId,
-      );
+    const telegramId = ctx.from.id.toString();
+    const rawLang = await getUserLanguage(telegramId);
+    const lang = resolveLanguage(rawLang);
 
     if (!waitingForFile.has(telegramId)) {
       return;
     }
 
+    const document = ctx.message.document;
+    const fileName = document.file_name || 'unknown';
+    const fileSize = document.file_size || 0;
+
+    // Telegram Bot API 20 MB cheklovi tekshiruvi
+    if (fileSize > MAX_TELEGRAM_FILE_SIZE) {
+      waitingForFile.delete(telegramId);
+      await ctx.reply(
+        MESSAGES.tooLargeTelegram[lang],
+        Markup.inlineKeyboard([
+          [Markup.button.callback(MESSAGES.mainMenuBtn[lang], 'main_menu')],
+        ])
+      );
+      return;
+    }
+
+    waitingForFile.delete(telegramId);
+
+    // Qabul qilinganlik xabari
+    await ctx.reply(MESSAGES.fileReceived(fileName, lang));
+
+    const tempFilePath = path.join(os.tmpdir(), `${Date.now()}-${fileName}`);
+
     try {
-
-      waitingForFile.delete(
-        telegramId,
-      );
-
-      const document =
-        ctx.message.document;
-
-      const fileName =
-        document.file_name ||
-        'unknown';
-
-      const fileSize =
-        document.file_size || 0;
-
-      console.log(
-        '📦 Fayl qabul qilindi:',
-        fileName,
-        fileSize,
-      );
-
-      // =====================================================
-      // 📩 QABUL QILINGANINI FOYDALANUVCHIGA AYTISh
-      // =====================================================
-
-      if (language === 'ru') {
-
-        await ctx.reply(
-          `📦 Файл принят.\n\n` +
-          `📄 Имя: ${fileName}\n\n` +
-          `⏳ Подготовка к проверке...`,
-        );
-
-      } else if (
-        language === 'uz_cyr'
-      ) {
-
-        await ctx.reply(
-          `📦 Файл қабул қилинди.\n\n` +
-          `📄 Номи: ${fileName}\n\n` +
-          `⏳ Текширувга тайёрланмоқда...`,
-        );
-
-      } else {
-
-        await ctx.reply(
-          `📦 Fayl qabul qilindi.\n\n` +
-          `📄 Nomi: ${fileName}\n\n` +
-          `⏳ Tekshiruvga tayyorlanmoqda...`,
-        );
-      }
-
-      // =====================================================
-      // 📥 TELEGRAM FILE
-      // =====================================================
-
-      const telegramFile =
-        await ctx.telegram.getFile(
-          document.file_id,
-        );
-
+      // Telegramdan fayl ma'lumotini olish
+      const telegramFile = await ctx.telegram.getFile(document.file_id);
       if (!telegramFile.file_path) {
-        throw new Error(
-          'Telegram fayl yo‘li topilmadi.',
-        );
+        throw new Error('Telegram fayl yo‘li topilmadi.');
       }
 
-      // =====================================================
-      // 📁 VAQTINCHA FAYL
-      // =====================================================
+      const fileUrl = `https://api.telegram.org/file/bot${process.env.BOT_TOKEN}/${telegramFile.file_path}`;
+      const response = await axios.get(fileUrl, { responseType: 'arraybuffer' });
 
-      const tempFilePath =
-        path.join(
-          os.tmpdir(),
-          `${Date.now()}-${fileName}`,
-        );
+      fs.writeFileSync(tempFilePath, response.data);
 
-      try {
+      // Backendga yuborish
+      const form = new FormData();
+      form.append('file', fs.createReadStream(tempFilePath), {
+        filename: fileName,
+        contentType: document.mime_type || 'application/octet-stream',
+      });
 
-        // ===================================================
-        // 📥 TELEGRAMDAN YUKLAB OLISH
-        // ===================================================
+      const backendResponse = await api.post('/scanner/file/check', form, {
+        headers: { ...form.getHeaders() },
+        maxContentLength: Infinity,
+        maxBodyLength: Infinity,
+      });
 
-        const fileUrl =
-          `https://api.telegram.org/file/bot${process.env.BOT_TOKEN}/${telegramFile.file_path}`;
+      const result = backendResponse.data;
 
-        const response =
-          await axios.get(
-            fileUrl,
-            {
-              responseType:
-                'arraybuffer',
-            },
-          );
-
-        fs.writeFileSync(
-          tempFilePath,
-          response.data,
-        );
-
-        console.log(
-          '📥 Fayl vaqtincha saqlandi:',
-          tempFilePath,
-        );
-
-        // ===================================================
-        // 📤 BACKENDGA YUBORISH
-        // ===================================================
-
-        const form =
-          new FormData();
-
-        form.append(
-          'file',
-          fs.createReadStream(
-            tempFilePath,
-          ),
-          {
-            filename:
-              fileName,
-
-            contentType:
-              document.mime_type ||
-              'application/octet-stream',
-          },
-        );
-
-        console.log(
-          '📤 Fayl backendga yuborilmoqda...',
-        );
-
-        const backendResponse =
-          await api.post(
-            '/scanner/file/check',
-            form,
-            {
-              headers: {
-                ...form.getHeaders(),
-              },
-
-              maxContentLength:
-                Infinity,
-
-              maxBodyLength:
-                Infinity,
-            },
-          );
-
-        const result =
-          backendResponse.data;
-
-        console.log(
-          '✅ Backend file result:',
-          result,
-        );
-
-        // ===================================================
-        // ⏳ VIRUSTOTAL PENDING
-        // ===================================================
-
-        if (
-          result.pending === true &&
-          result.analysisId
-        ) {
-
-          // Analysis ID ni saqlaymiz
-          pendingFileAnalyses.set(
-            telegramId,
-            result.analysisId,
-          );
-
-          console.log(
-            '⏳ VirusTotal pending:',
-            result.analysisId,
-          );
-
-          const message =
-            language === 'ru'
-              ? '⏳ Файл отправлен на анализ VirusTotal.\n\nПроверка ещё выполняется.\n\n🕐 Пожалуйста, подождите 20–30 секунд, затем нажмите «Проверить результат».'
-              : language === 'uz_cyr'
-                ? '⏳ Файл VirusTotal таҳлилига юборилди.\n\nТекширув ҳали давом этмоқда.\n\n🕐 Илтимос, 20–30 сония кутиб, сўнг «Натижани текшириш» тугмасини босинг.'
-                : '⏳ Fayl VirusTotal tahliliga yuborildi.\n\nTekshiruv hali davom etmoqda.\n\n🕐 Iltimos, 20–30 soniya kutib, so‘ng «Natijani tekshirish» tugmasini bosing.';
-
-          await ctx.reply(
-            message,
-            Markup.inlineKeyboard([
-              [
-                Markup.button.callback(
-                  language === 'ru'
-                    ? '🔄 Проверить результат'
-                    : language === 'uz_cyr'
-                      ? '🔄 Натижани текшириш'
-                      : '🔄 Natijani tekshirish',
-
-                  'check_file_status',
-                ),
-              ],
-
-              [
-                Markup.button.callback(
-                  language === 'ru'
-                    ? '⬅️ Главное меню'
-                    : language === 'uz_cyr'
-                      ? '⬅️ Асосий меню'
-                      : '⬅️ Asosiy menyu',
-
-                  'main_menu',
-                ),
-              ],
-            ]),
-          );
-
-          return;
-        }
-
-        // ===================================================
-        // 🎯 AGAR NATIJA DARHOL TAYYOR BO‘LSA
-        // ===================================================
-
-        await sendFinalFileResult(
-          ctx,
-          language,
-          fileName,
-          result,
-        );
-
-      } finally {
-
-        // ===================================================
-        // 🧹 TEMP FILE O‘CHIRISH
-        // ===================================================
-
-        if (
-          fs.existsSync(
-            tempFilePath,
-          )
-        ) {
-          fs.unlinkSync(
-            tempFilePath,
-          );
-
-          console.log(
-            '🧹 Temp fayl o‘chirildi:',
-            tempFilePath,
-          );
-        }
-      }
-
-    } catch (error: any) {
-      console.error(
-        '❌ File receive error:',
-        error,
-      );
-
-      waitingForFile.delete(
-        telegramId,
-      );
-
-      // =====================================================
-      // 📦 100 MB DAN KATTA FAYL
-      // =====================================================
-
-      const errorMessage =
-        error?.response?.data?.message;
-
-      const isFileTooLarge =
-        Array.isArray(errorMessage)
-          ? errorMessage.some(
-            (message: string) =>
-              message.includes(
-                'File too large',
-              ),
-          )
-          : typeof errorMessage ===
-          'string' &&
-          errorMessage.includes(
-            'File too large',
-          );
-
-      if (isFileTooLarge) {
-        const message =
-          language === 'ru'
-            ? '❌ Файл слишком большой.\n\n📦 Максимальный размер файла: 100 МБ.'
-            : language === 'uz_cyr'
-              ? '❌ Файл ҳажми жуда катта.\n\n📦 Максимал рухсат этилган ҳажм: 100 МБ.'
-              : '❌ Fayl hajmi juda katta.\n\n📦 Maksimal ruxsat etilgan hajm: 100 MB.';
+      // Agar tahlil jarayonda bo'lsa (pending)
+      if (result.pending === true && result.analysisId) {
+        pendingFileAnalyses.set(telegramId, result.analysisId);
 
         await ctx.reply(
-          message,
+          MESSAGES.vtPending[lang],
           Markup.inlineKeyboard([
-            [
-              Markup.button.callback(
-                language === 'ru'
-                  ? '⬅️ Главное меню'
-                  : language === 'uz_cyr'
-                    ? '⬅️ Асосий меню'
-                    : '⬅️ Asosiy menyu',
-                'main_menu',
-              ),
-            ],
-          ]),
+            [Markup.button.callback(MESSAGES.checkResultBtn[lang], 'check_file_status')],
+            [Markup.button.callback(MESSAGES.mainMenuBtn[lang], 'main_menu')],
+          ])
         );
-
         return;
       }
 
-      // =====================================================
-      // ❌ BOSHQA XATOLIK
-      // =====================================================
+      // Agar natija darhol tayyor bo'lsa
+      const finalMsg = formatResultText(lang, result, fileName);
+      await ctx.reply(finalMsg);
 
-      const message =
-        language === 'ru'
-          ? '❌ Произошла ошибка при проверке файла.'
-          : language === 'uz_cyr'
-            ? '❌ Файлни текширишда хатолик юз берди.'
-            : '❌ Faylni tekshirishda xatolik yuz berdi.';
+    } catch (error: any) {
+      console.error('❌ File receive error:', error);
 
-      await ctx.reply(
-        message,
-      );
+      const errorMessage = error?.response?.data?.message;
+      const isFileTooLarge = Array.isArray(errorMessage)
+        ? errorMessage.some((msg: string) => msg.includes('File too large'))
+        : typeof errorMessage === 'string' && errorMessage.includes('File too large');
+
+      if (isFileTooLarge) {
+        await ctx.reply(
+          MESSAGES.tooLargeBackend[lang],
+          Markup.inlineKeyboard([
+            [Markup.button.callback(MESSAGES.mainMenuBtn[lang], 'main_menu')],
+          ])
+        );
+        return;
+      }
+
+      await ctx.reply(MESSAGES.error[lang]);
+    } finally {
+      // Temp faylni tozalash
+      if (fs.existsSync(tempFilePath)) {
+        try {
+          fs.unlinkSync(tempFilePath);
+        } catch (cleanupErr) {
+          console.error('⚠️ Temp faylni o‘chirishda xatolik:', cleanupErr);
+        }
+      }
     }
   });
 
-  // =========================================================
-  // 🔄 VIRUSTOTAL NATIJASINI TEKSHIRISH
-  // =========================================================
+  // 3. VirusTotal natijasini tekshirish (Polling)
+  bot.action('check_file_status', async (ctx) => {
+    try {
+      await ctx.answerCbQuery();
+      const telegramId = ctx.from.id.toString();
+      const rawLang = await getUserLanguage(telegramId);
+      const lang = resolveLanguage(rawLang);
 
-  // =========================================================
-  // 🔄 VIRUSTOTAL NATIJASINI TEKSHIRISH
-  // =========================================================
+      const analysisId = pendingFileAnalyses.get(telegramId);
+      if (!analysisId) {
+        await ctx.reply(MESSAGES.notFound[lang]);
+        return;
+      }
 
-  bot.action(
-    'check_file_status',
-    async (ctx) => {
-      try {
-        await ctx.answerCbQuery();
+      const chatId = ctx.chat?.id;
+      const messageId =
+        'message' in ctx.callbackQuery && ctx.callbackQuery.message
+          ? ctx.callbackQuery.message.message_id
+          : undefined;
 
-        const telegramId =
-          ctx.from.id.toString();
+      if (!chatId || !messageId) {
+        throw new Error('Telegram message ID topilmadi.');
+      }
 
-        const language =
-          await getUserLanguage(
-            telegramId,
-          );
+      await ctx.telegram.editMessageText(chatId, messageId, undefined, MESSAGES.vtChecking[lang]);
 
-        // ===================================================
-        // 📌 ANALYSIS ID
-        // ===================================================
+      const maxAttempts = 6;
+      const delayMs = 5000;
+      let finalResult: any = null;
 
-        const analysisId =
-          pendingFileAnalyses.get(
-            telegramId,
-          );
+      for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+        try {
+          const response = await api.post('/scanner/file/check-status', { analysisId });
+          const result = response.data?.result;
 
-        if (!analysisId) {
-          const message =
-            language === 'ru'
-              ? '❌ Анализ файла не найден. Пожалуйста, отправьте файл заново.'
-              : language === 'uz_cyr'
-                ? '❌ Файл таҳлили топилмади. Илтимос, файлни қайта юборинг.'
-                : '❌ Fayl tahlili topilmadi. Iltimos, faylni qayta yuboring.';
-
-          await ctx.reply(message);
-
-          return;
+          if (result && result.status !== 'unknown') {
+            finalResult = result;
+            break;
+          }
+        } catch (pollErr) {
+          console.error(`⚠️ Polling xatosi (${attempt}):`, pollErr);
         }
 
-        // ===================================================
-        // 📌 BOSILGAN XABAR ID
-        // ===================================================
-
-        const chatId =
-          ctx.chat?.id;
-
-        const messageId =
-          'message' in ctx.callbackQuery &&
-            ctx.callbackQuery.message
-            ? ctx.callbackQuery.message.message_id
-            : undefined;
-
-        if (!chatId || !messageId) {
-          throw new Error(
-            'Telegram message ID topilmadi.',
-          );
+        if (attempt < maxAttempts) {
+          await new Promise((resolve) => setTimeout(resolve, delayMs));
         }
+      }
 
-        console.log(
-          '🔄 File analysis tekshirilmoqda:',
-          analysisId,
-        );
-
-        // ===================================================
-        // ⏳ KUTISH XABARI
-        // ===================================================
-
-        const waitingMessage =
-          language === 'ru'
-            ? '⏳ VirusTotal анализирует файл...\n\n🕐 Пожалуйста, подождите.\nПроверка обычно занимает 20–30 секунд.'
-            : language === 'uz_cyr'
-              ? '⏳ VirusTotal файлни таҳлил қилмоқда...\n\n🕐 Илтимос, кутинг.\nТекширув одатда 20–30 сония давом этади.'
-              : '⏳ VirusTotal faylni tahlil qilmoqda...\n\n🕐 Iltimos, kuting.\nTekshiruv odatda 20–30 soniya davom etadi.';
-
+      // Agar hali ham tayyor bo'lmasa
+      if (!finalResult) {
         await ctx.telegram.editMessageText(
           chatId,
           messageId,
           undefined,
-          waitingMessage,
+          MESSAGES.vtStillPending[lang],
+          Markup.inlineKeyboard([
+            [Markup.button.callback(MESSAGES.checkResultBtn[lang], 'check_file_status')],
+            [Markup.button.callback(MESSAGES.mainMenuBtn[lang], 'main_menu')],
+          ])
         );
-
-        // ===================================================
-        // 🔄 POLLING
-        // ===================================================
-
-        const maxAttempts = 6;
-        const delayMs = 5000;
-
-        let finalResult: any = null;
-
-        for (
-          let attempt = 1;
-          attempt <= maxAttempts;
-          attempt++
-        ) {
-          console.log(
-            `🔄 VirusTotal polling: ${attempt}/${maxAttempts}`,
-          );
-
-          try {
-            const response =
-              await api.post(
-                '/scanner/file/check-status',
-                {
-                  analysisId,
-                },
-              );
-
-            const data =
-              response.data;
-
-            const result =
-              data?.result;
-
-            console.log(
-              '📊 VirusTotal status:',
-              result?.status,
-            );
-
-            // =================================================
-            // ✅ TAYYOR
-            // =================================================
-
-            if (
-              result &&
-              result.status !== 'unknown'
-            ) {
-              finalResult =
-                result;
-
-              console.log(
-                '✅ VirusTotal analysis tayyor:',
-                result.status,
-              );
-
-              break;
-            }
-          } catch (error) {
-            console.error(
-              '⚠️ Polling vaqtida xatolik:',
-              error,
-            );
-          }
-
-          // =================================================
-          // ⏳ 5 SONIYA KUTISH
-          // =================================================
-
-          if (
-            attempt <
-            maxAttempts
-          ) {
-            await new Promise(
-              (resolve) =>
-                setTimeout(
-                  resolve,
-                  delayMs,
-                ),
-            );
-          }
-        }
-
-        // ===================================================
-        // ⏰ 30 SONIYADA HAM TAYYOR EMAS
-        // ===================================================
-
-        if (!finalResult) {
-          const stillRunning =
-            language === 'ru'
-              ? '⏳ Анализ всё ещё выполняется.\n\n🕐 Подождите ещё 20–30 секунд и нажмите «Проверить результат».'
-              : language === 'uz_cyr'
-                ? '⏳ Таҳлил ҳали давом этмоқда.\n\n🕐 Яна 20–30 сония кутинг ва «Натижани текшириш» тугмасини босинг.'
-                : '⏳ Tahlil hali davom etmoqda.\n\n🕐 Yana 20–30 soniya kuting va «Natijani tekshirish» tugmasini bosing.';
-
-          await ctx.telegram.editMessageText(
-            chatId,
-            messageId,
-            undefined,
-            stillRunning,
-            Markup.inlineKeyboard([
-              [
-                Markup.button.callback(
-                  language === 'ru'
-                    ? '🔄 Проверить результат'
-                    : language === 'uz_cyr'
-                      ? '🔄 Натижани текшириш'
-                      : '🔄 Natijani tekshirish',
-                  'check_file_status',
-                ),
-              ],
-              [
-                Markup.button.callback(
-                  language === 'ru'
-                    ? '⬅️ Главное меню'
-                    : language === 'uz_cyr'
-                      ? '⬅️ Асосий меню'
-                      : '⬅️ Asosiy menyu',
-                  'main_menu',
-                ),
-              ],
-            ]),
-          );
-
-          return;
-        }
-
-        // ===================================================
-        // 🧹 ANALYSIS ID O‘CHIRISH
-        // ===================================================
-
-        pendingFileAnalyses.delete(
-          telegramId,
-        );
-
-        // ===================================================
-        // 🎯 YAKUNIY NATIJA
-        // ===================================================
-
-        await editFinalFileResult(
-          ctx,
-          language,
-          messageId,
-          finalResult,
-        );
-
-      } catch (error) {
-        console.error(
-          '❌ File status error:',
-          error,
-        );
-
-        await ctx.reply(
-          '❌ Fayl tekshiruvi natijasini olishda xatolik yuz berdi.',
-        );
+        return;
       }
-    },
-  );
-}
 
-// =========================================================
-// 🎯 FINAL NATIJA — YANGI XABAR
-// =========================================================
+      // Muvaffaqiyatli tugadi
+      pendingFileAnalyses.delete(telegramId);
+      const resultMessage = formatResultText(lang, finalResult);
 
-async function sendFinalFileResult(
-  ctx: any,
-  language: string,
-  fileName: string,
-  result: any,
-) {
+      // ✅ TUZATILDI: Natija ostiga "Asosiy menyu" tugmasi qo'shildi
+      await ctx.telegram.editMessageText(
+        chatId,
+        messageId,
+        undefined,
+        resultMessage,
+        {
+          parse_mode: 'Markdown',
+          ...Markup.inlineKeyboard([
+            [Markup.button.callback(MESSAGES.mainMenuBtn[lang], 'main_menu')],
+          ]),
+        },
+      );
 
-  const status =
-    result?.status ||
-    'unknown';
-
-  const score =
-    result?.score ??
-    result?.risk?.score ??
-    result?.raw?.score ??
-    0;
-
-  let statusText =
-    '';
-
-  // =======================================================
-  // 🇷🇺 RUS
-  // =======================================================
-
-  if (
-    language === 'ru'
-  ) {
-
-    statusText =
-      status === 'dangerous'
-        ? '🔴 ОПАСНЫЙ'
-        : status === 'suspicious'
-          ? '🟡 ПОДОЗРИТЕЛЬНЫЙ'
-          : status === 'safe'
-            ? '🟢 БЕЗОПАСНЫЙ'
-            : '⚪ НЕИЗВЕСТНО';
-
-    await ctx.reply(
-      `🔎 Результат проверки\n\n` +
-      `📄 Файл: ${fileName}\n` +
-      `🛡 Уровень риска: ${statusText}\n` +
-      `🎯 Балл риска: ${score}`,
-    );
-
-    return;
-  }
-
-  // =======================================================
-  // 🇺🇿 KIRILL
-  // =======================================================
-
-  if (
-    language === 'uz_cyr'
-  ) {
-
-    statusText =
-      status === 'dangerous'
-        ? '🔴 ХАВФЛИ'
-        : status === 'suspicious'
-          ? '🟡 ШУБҲАЛИ'
-          : status === 'safe'
-            ? '🟢 ХАВФСИЗ'
-            : '⚪ НОМАЪЛУМ';
-
-    await ctx.reply(
-      `🔎 Текширув натижаси\n\n` +
-      `📄 Файл: ${fileName}\n` +
-      `🛡 Хавф даражаси: ${statusText}\n` +
-      `🎯 Хавф бали: ${score}`,
-    );
-
-    return;
-  }
-
-  // =======================================================
-  // 🇺🇿 LOTIN
-  // =======================================================
-
-  statusText =
-    status === 'dangerous'
-      ? '🔴 XAVFLI'
-      : status === 'suspicious'
-        ? '🟡 SHUBHALI'
-        : status === 'safe'
-          ? '🟢 XAVFSIZ'
-          : '⚪ NOANIQ';
-
-  await ctx.reply(
-    `🔍 Tekshiruv natijasi\n\n` +
-    `📄 Fayl: ${fileName}\n` +
-    `🛡️ Xavf darajasi: ${statusText}\n` +
-    `🎯 Xavf bali: ${score}`,
-  );
-}
-
-// =========================================================
-// ✏️ FINAL NATIJA — KUTISH XABARINI ALMASHTIRISH
-// =========================================================
-
-async function editFinalFileResult(
-  ctx: any,
-  language: string,
-  messageId: number,
-  result: any,
-) {
-
-  const status =
-    result?.status ||
-    'unknown';
-
-  const score =
-    result?.score ??
-    result?.risk?.score ??
-    result?.raw?.score ??
-    0;
-
-  let statusText =
-    '';
-
-  // =======================================================
-  // 🇷🇺 RUS
-  // =======================================================
-
-  if (
-    language === 'ru'
-  ) {
-
-    statusText =
-      status === 'dangerous'
-        ? '🔴 ОПАСНЫЙ'
-        : status === 'suspicious'
-          ? '🟡 ПОДОЗРИТЕЛЬНЫЙ'
-          : status === 'safe'
-            ? '🟢 БЕЗОПАСНЫЙ'
-            : '⚪ НЕИЗВЕСТНО';
-
-    await ctx.telegram.editMessageText(
-      ctx.chat!.id,
-      messageId,
-      undefined,
-      `🔎 Результат проверки\n\n` +
-      `🛡 Уровень риска: ${statusText}\n` +
-      `🎯 Балл риска: ${score}`,
-    );
-
-    return;
-  }
-
-  // =======================================================
-  // 🇺🇿 KIRILL
-  // =======================================================
-
-  if (
-    language === 'uz_cyr'
-  ) {
-
-    statusText =
-      status === 'dangerous'
-        ? '🔴 ХАВФЛИ'
-        : status === 'suspicious'
-          ? '🟡 ШУБҲАЛИ'
-          : status === 'safe'
-            ? '🟢 ХАВФСИЗ'
-            : '⚪ НОМАЪЛУМ';
-
-    await ctx.telegram.editMessageText(
-      ctx.chat!.id,
-      messageId,
-      undefined,
-      `🔎 Текширув натижаси\n\n` +
-      `🛡 Хавф даражаси: ${statusText}\n` +
-      `🎯 Хавф бали: ${score}`,
-    );
-
-    return;
-  }
-
-  // =======================================================
-  // 🇺🇿 LOTIN
-  // =======================================================
-
-  statusText =
-    status === 'dangerous'
-      ? '🔴 XAVFLI'
-      : status === 'suspicious'
-        ? '🟡 SHUBHALI'
-        : status === 'safe'
-          ? '🟢 XAVFSIZ'
-          : '⚪ NOANIQ';
-
-  await ctx.telegram.editMessageText(
-    ctx.chat!.id,
-    messageId,
-    undefined,
-    `🔍 Tekshiruv natijasi\n\n` +
-    `🛡️ Xavf darajasi: ${statusText}\n` +
-    `🎯 Xavf bali: ${score}`,
-  );
+    } catch (error) {
+      console.error('❌ File status error:', error);
+      const telegramId = ctx.from?.id.toString();
+      const lang = resolveLanguage(telegramId ? await getUserLanguage(telegramId) : undefined);
+      await ctx.reply(MESSAGES.error[lang]);
+    }
+  });
 }

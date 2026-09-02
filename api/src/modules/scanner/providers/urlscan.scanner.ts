@@ -1,13 +1,21 @@
 import { Injectable } from '@nestjs/common';
-
 import { ScannerResult } from '../interfaces/scanner-result.interface';
 
 @Injectable()
 export class UrlscanScanner {
   private readonly apiUrl = 'https://urlscan.io/api/v1';
-
   private readonly apiKey = process.env.URLSCAN_API_KEY;
 
+  /**
+   * Standart scanner interfeysi uchun kirish metodi
+   */
+  async scan(url: string): Promise<ScannerResult> {
+    return this.smartScan(url);
+  }
+
+  /**
+   * URLScan bazasidan avvalgi scanlarni qidirish
+   */
   async search(url: string): Promise<ScannerResult> {
     if (!this.apiKey) {
       return {
@@ -18,32 +26,40 @@ export class UrlscanScanner {
     }
 
     try {
-      const query = encodeURIComponent(`page.url:"${url}"`);
+      // URL va domenni aniqroq qamrab oluvchi qidiruv
+      const cleanUrl = url.replace(/^https?:\/\//, '').replace(/\/+$/, '');
+      const query = encodeURIComponent(`page.url:"${url}" OR page.domain:"${cleanUrl}"`);
 
-      const response = await fetch(`${this.apiUrl}/search/?q=${query}`, {
+      const response = await fetch(`${this.apiUrl}/search/?q=${query}&size=3`, {
         method: 'GET',
         headers: {
           'API-Key': this.apiKey,
           Accept: 'application/json',
         },
+        signal: AbortSignal.timeout(10000),
       });
 
       const responseText = await response.text();
 
-      console.log('URLScan Search HTTP status:', response.status);
-
       if (!response.ok) {
-        console.error('URLScan Search response:', responseText);
-
         return {
           provider: 'urlscan',
           status: 'unknown',
-          message: `URLScan Search API xatosi: HTTP ${response.status}`,
+          message: `URLScan Search xatosi: HTTP ${response.status}`,
           raw: responseText,
         };
       }
 
-      const data = JSON.parse(responseText);
+      let data: any;
+      try {
+        data = JSON.parse(responseText);
+      } catch {
+        return {
+          provider: 'urlscan',
+          status: 'unknown',
+          message: 'URLScan javobini tahlil qilib bo‘lmadi.',
+        };
+      }
 
       const results = data?.results ?? [];
 
@@ -51,42 +67,31 @@ export class UrlscanScanner {
         return {
           provider: 'urlscan',
           status: 'unknown',
-          message:
-            'URLScan bazasida ushbu URL bo‘yicha oldingi scan topilmadi.',
+          message: 'URLScan bazasida ushbu havola bo‘yicha avvalgi tahlil topilmadi.',
           raw: data,
         };
       }
 
-      /*
-       * Eng yangi scan natijasini olamiz.
-       */
+      // Eng oxirgi scan natijasini baholash
       const latest = results[0];
-
       const verdicts = latest?.verdicts;
-
-      const malicious = verdicts?.overall?.malicious === true;
-
-      const score = verdicts?.overall?.score;
+      const malicious = verdicts?.overall?.malicious === true || verdicts?.engines?.maliciousTotal > 0;
+      const score = verdicts?.overall?.score ?? 0;
 
       if (malicious) {
         return {
           provider: 'urlscan',
           status: 'dangerous',
-          message: 'URLScan ushbu manbani zararli deb baholagan.',
+          message: 'URLScan ushbu manbani zararli deb topgan.',
           raw: latest,
         };
       }
 
-      /*
-       * Agar URLScan umumiy score
-       * mavjud bo‘lsa, keyinchalik
-       * Risk Engine'da ishlatamiz.
-       */
-      if (typeof score === 'number' && score > 0) {
+      if (score > 0) {
         return {
           provider: 'urlscan',
           status: 'suspicious',
-          message: `URLScan risk score: ${score}.`,
+          message: `URLScan shubhali deb topdi (Xavf bali: ${score}).`,
           raw: latest,
         };
       }
@@ -94,21 +99,23 @@ export class UrlscanScanner {
       return {
         provider: 'urlscan',
         status: 'safe',
-        message: 'URLScan mavjud scan natijasida aniq zararli verdict topmadi.',
+        message: 'URLScan mavjud maʼlumotlarida zararli faoliyat aniqlanmadi.',
         raw: latest,
       };
     } catch (error: any) {
-      console.error('URLScan Search error:', error?.message || error);
-
+      console.error('❌ URLScan search error:', error?.message || error);
       return {
         provider: 'urlscan',
         status: 'unknown',
-        message: 'URLScan bilan bog‘lanishda xatolik yuz berdi.',
-        raw: error?.message || error,
+        message: 'URLScan qidiruv tizimi bilan bog‘lanishda xatolik yuz berdi.',
+        raw: error?.message,
       };
     }
   }
 
+  /**
+   * Yangi tekshiruv (Deep Scan) yuborish
+   */
   async submitScan(url: string): Promise<ScannerResult> {
     if (!this.apiKey) {
       return {
@@ -127,21 +134,18 @@ export class UrlscanScanner {
         },
         body: JSON.stringify({
           url,
-          visibility: 'private',
+          visibility: 'unlisted', // 'private' faqat pullik hisoblarda to'liq ishlaydi, 'unlisted' tavsiya etiladi
         }),
+        signal: AbortSignal.timeout(15000),
       });
 
       const responseText = await response.text();
 
-      console.log('URLScan submit HTTP status:', response.status);
-
       if (!response.ok) {
-        console.error('URLScan submit response:', responseText);
-
         return {
           provider: 'urlscan',
           status: 'unknown',
-          message: `URLScan scan yuborishda xatolik: HTTP ${response.status}`,
+          message: `URLScan yuborish xatosi: HTTP ${response.status}`,
           raw: responseText,
         };
       }
@@ -151,21 +155,23 @@ export class UrlscanScanner {
       return {
         provider: 'urlscan',
         status: 'unknown',
-        message: 'URLScan chuqur tahlili boshlandi.',
+        message: 'URLScan chuqur tahlili qabul qilindi.',
         raw: data,
       };
     } catch (error: any) {
-      console.error('URLScan submit error:', error?.message || error);
-
+      console.error('❌ URLScan submit error:', error?.message || error);
       return {
         provider: 'urlscan',
         status: 'unknown',
-        message: 'URLScan scan yuborishda xatolik yuz berdi.',
-        raw: error?.message || error,
+        message: 'URLScan tahliliga yuborishda tarmoq xatosi.',
+        raw: error?.message,
       };
     }
   }
 
+  /**
+   * Berilgan resultUrl bo'yicha tahlil yakunini olish
+   */
   async getResult(resultUrl: string): Promise<ScannerResult> {
     if (!this.apiKey) {
       return {
@@ -182,60 +188,48 @@ export class UrlscanScanner {
           'API-Key': this.apiKey,
           Accept: 'application/json',
         },
+        signal: AbortSignal.timeout(10000),
       });
 
-      const responseText = await response.text();
-
-      console.log('URLScan result HTTP status:', response.status);
-
-      // Scan hali tayyor emas
+      // Tahlil hali tugallanmagan bo'lsa URLScan 404 beradi
       if (response.status === 404) {
         return {
           provider: 'urlscan',
           status: 'unknown',
-          message: 'URLScan tahlili hali tugamagan.',
-          raw: {
-            pending: true,
-          },
+          message: 'URLScan tahlili hali davom etmoqda.',
+          raw: { pending: true },
         };
       }
 
       if (!response.ok) {
-        console.error('URLScan result response:', responseText);
-
+        const responseText = await response.text();
         return {
           provider: 'urlscan',
           status: 'unknown',
-          message: `URLScan result xatosi: HTTP ${response.status}`,
+          message: `URLScan natija xatosi: HTTP ${response.status}`,
           raw: responseText,
         };
       }
 
-      const data = JSON.parse(responseText);
-
-      /*
-       * URLScan umumiy verdicti.
-       */
+      const data = await response.json();
       const overall = data?.verdicts?.overall;
-
-      const malicious = overall?.malicious === true;
-
-      const score = overall?.score;
+      const malicious = overall?.malicious === true || data?.verdicts?.engines?.maliciousTotal > 0;
+      const score = overall?.score ?? 0;
 
       if (malicious) {
         return {
           provider: 'urlscan',
           status: 'dangerous',
-          message: 'URLScan ushbu manbani zararli deb aniqladi.',
+          message: 'URLScan chuqur tahlilida havola xavfli deb topildi.',
           raw: data,
         };
       }
 
-      if (typeof score === 'number' && score > 0) {
+      if (score > 0) {
         return {
           provider: 'urlscan',
           status: 'suspicious',
-          message: `URLScan risk score: ${score}.`,
+          message: `URLScan shubhali faoliyat aniqladi (Xavf bali: ${score}).`,
           raw: data,
         };
       }
@@ -243,133 +237,82 @@ export class UrlscanScanner {
       return {
         provider: 'urlscan',
         status: 'safe',
-        message: 'URLScan tahlilida aniq zararli faoliyat topilmadi.',
+        message: 'URLScan chuqur tahlilida tahdid aniqlanmadi.',
         raw: data,
       };
     } catch (error: any) {
-      console.error('URLScan result error:', error?.message || error);
-
+      console.error('❌ URLScan getResult error:', error?.message || error);
       return {
         provider: 'urlscan',
         status: 'unknown',
         message: 'URLScan natijasini olishda xatolik yuz berdi.',
-        raw: error?.message || error,
+        raw: error?.message,
       };
     }
   }
 
+  /**
+   * Aqlli skanerlash: avval kesh qidiriladi, topilmasa yangi scan boshlanadi
+   */
   async smartScan(url: string): Promise<ScannerResult> {
-    // 1. Avval URLScan bazasidan qidiramiz
     const searchResult = await this.search(url);
 
-    // Oldingi scan topilgan bo‘lsa — darhol qaytaramiz
-    if (
-      searchResult.status === 'safe' ||
-      searchResult.status === 'suspicious' ||
-      searchResult.status === 'dangerous'
-    ) {
-      return {
-        ...searchResult,
-        message: 'URLScan bazasidan oldingi scan natijasi olindi.',
-      };
+    if (searchResult.status !== 'unknown') {
+      return searchResult;
     }
 
-    // 2. Oldingi scan topilmadi — yangi scan boshlaymiz
     const submitResult = await this.submitScan(url);
 
-    // Submit xato bergan bo‘lsa
     if (!submitResult.raw || typeof submitResult.raw !== 'object') {
-      return {
-        provider: 'urlscan',
-        status: 'unknown',
-        message: 'URLScan scan boshlandi, lekin natija maʼlumotlari olinmadi.',
-        raw: submitResult.raw,
-      };
+      return submitResult;
     }
 
-    // URLScan submit javobini xavfsiz type qilamiz
-    const raw = submitResult.raw as {
-      api?: string;
-      uuid?: string;
-      visibility?: string;
-      result?: string;
-    };
-
-    // URLScan result API manzili
+    const raw = submitResult.raw as { api?: string; result?: string; uuid?: string };
     const resultUrl = raw.api ?? raw.result;
 
-    // Result URL olinmagan bo‘lsa
     if (!resultUrl) {
       return {
         provider: 'urlscan',
         status: 'unknown',
-        message: 'URLScan scan boshlandi, lekin result URL olinmadi.',
+        message: 'URLScan tahlili boshlandi, ammo natija havolasi olinmadi.',
         raw: submitResult.raw,
       };
     }
 
-    // 3. Foydalanuvchini kutdirmaymiz
     return {
       provider: 'urlscan',
       status: 'unknown',
-      message: 'URLScan yangi deep scan boshladi. Natija keyinroq olinadi.',
+      message: 'URLScan chuqur tahlili boshlandi.',
       raw: {
         pending: true,
         resultUrl,
         uuid: raw.uuid ?? null,
-        visibility: raw.visibility ?? null,
       },
     };
   }
 
-  async pollResult(
-    resultUrl: string,
-    maxAttempts = 12,
-    delayMs = 2500,
-  ): Promise<ScannerResult> {
+  /**
+   * Natija tayyor bo'lguncha oraliq tekshiruv (polling)
+   */
+  async pollResult(resultUrl: string, maxAttempts = 10, delayMs = 3000): Promise<ScannerResult> {
     for (let attempt = 1; attempt <= maxAttempts; attempt++) {
       console.log(`🔄 URLScan polling: ${attempt}/${maxAttempts}`);
 
       const result = await this.getResult(resultUrl);
 
-      // =====================================================
-      // ✅ NATIJA TAYYOR
-      // =====================================================
-
-      if (
-        result.raw &&
-        typeof result.raw === 'object' &&
-        (result.raw as any).pending !== true
-      ) {
-        console.log('✅ URLScan natijasi tayyor');
-
+      if (result.raw && typeof result.raw === 'object' && (result.raw as any).pending !== true) {
         return result;
       }
 
-      // =====================================================
-      // ⏳ HALI TAYYOR EMAS
-      // =====================================================
-
-      console.log('⏳ URLScan hali natijani tayyorlamadi...');
-
-      // Oxirgi urinish bo‘lsa kutmaymiz
-      if (attempt === maxAttempts) {
-        break;
+      if (attempt < maxAttempts) {
+        await new Promise((resolve) => setTimeout(resolve, delayMs));
       }
-
-      // Keyingi tekshiruvgacha kutamiz
-      await new Promise((resolve) => setTimeout(resolve, delayMs));
     }
-
-    // =====================================================
-    // ⏳ NATIJA HALI TAYYOR EMAS
-    // =====================================================
 
     return {
       provider: 'urlscan',
       status: 'unknown',
-      message:
-        'URLScan tahlili hali tugamadi. Keyinroq qayta tekshirish mumkin.',
+      message: 'URLScan tahlili hali tugamadi. Keyinroq tekshiring.',
       raw: {
         pending: true,
         resultUrl,

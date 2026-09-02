@@ -1,25 +1,40 @@
-import { Injectable } from '@nestjs/common';
+import { Injectable, BadRequestException } from '@nestjs/common';
 import { PrismaService } from '../../prisma/prisma.service';
 
 @Injectable()
 export class SourceService {
-  constructor(
-    private readonly prisma: PrismaService,
-  ) {}
+  constructor(private readonly prisma: PrismaService) { }
+
+  /**
+   * Havoladan toza domenni ajratib olish (protokolsiz va www-siz)
+   */
+  private extractDomain(rawUrl: string): { domain: string; cleanUrl: string } {
+    try {
+      // Agar protokol bo'lmasa, new URL xato bermasligi uchun https:// qo'shamiz
+      const normalizedUrl = /^https?:\/\//i.test(rawUrl)
+        ? rawUrl
+        : `https://${rawUrl}`;
+
+      const parsed = new URL(normalizedUrl);
+      const domain = parsed.hostname.toLowerCase().replace(/^www\./, '');
+
+      return { domain, cleanUrl: normalizedUrl };
+    } catch {
+      throw new BadRequestException('Kiritilgan URL manzili yaroqsiz formatda.');
+    }
+  }
 
   async checkSource(url: string) {
-    const parsedUrl = new URL(url);
+    if (!url || typeof url !== 'string') {
+      throw new BadRequestException('URL ko‘rsatilmadi.');
+    }
 
-    const domain = parsedUrl.hostname
-      .toLowerCase()
-      .replace(/^www\./, '');
+    const { domain, cleanUrl } = this.extractDomain(url.trim());
 
-    const existingSource =
-      await this.prisma.source.findUnique({
-        where: {
-          domain,
-        },
-      });
+    // 1. Avval mavjud domenni tekshiramiz
+    const existingSource = await this.prisma.source.findUnique({
+      where: { domain },
+    });
 
     if (existingSource) {
       return {
@@ -28,9 +43,12 @@ export class SourceService {
       };
     }
 
-    const source = await this.prisma.source.create({
-      data: {
-        url,
+    // 2. Mavjud bo'lmasa, xavfsiz upsert orqali yaratamiz (Race Condition xavfisiz)
+    const source = await this.prisma.source.upsert({
+      where: { domain },
+      update: {},
+      create: {
+        url: cleanUrl,
         domain,
         status: 'unknown',
         reason: 'Manba hali bazada baholanmagan.',

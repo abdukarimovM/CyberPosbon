@@ -1,5 +1,4 @@
 import { Module } from '@nestjs/common';
-
 import { SourceController } from './source.controller';
 import { SourceService } from './source.service';
 
@@ -8,4 +7,4 @@ import { SourceService } from './source.service';
   providers: [SourceService],
   exports: [SourceService],
 })
-export class SourceModule {}
+export class SourceModule { }

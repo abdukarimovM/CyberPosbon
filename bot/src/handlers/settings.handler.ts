@@ -1,136 +1,109 @@
 import { Markup, Telegraf } from 'telegraf';
 import { getUserLanguage } from '../services/user.service';
-import { sendMainMenu } from './main-menu.handler';
+
+type SupportedLang = 'uz_lat' | 'uz_cyr' | 'ru';
+
+function resolveLang(rawLang?: string): SupportedLang {
+  if (rawLang === 'ru') return 'ru';
+  if (rawLang === 'uz_cyr') return 'uz_cyr';
+  return 'uz_lat';
+}
+
+const SETTINGS_I18N = {
+  title: {
+    uz_lat: '⚙️ *Sozlamalar*\n\nKerakli bo‘limni tanlang:',
+    uz_cyr: '⚙️ *Созламалар*\n\nКеракли бўлимни танланг:',
+    ru: '⚙️ *Настройки*\n\nВыберите нужный раздел:',
+  },
+  buttons: {
+    changeLang: {
+      uz_lat: '🌐 Tilni o‘zgartirish',
+      uz_cyr: '🌐 Тилни ўзгартириш',
+      ru: '🌐 Изменить язык',
+    },
+    mainMenu: {
+      uz_lat: '⬅️ Asosiy menyu',
+      uz_cyr: '⬅️ Асосий меню',
+      ru: '⬅️ Главное меню',
+    },
+    back: {
+      uz_lat: '⬅️ Orqaga',
+      uz_cyr: '⬅️ Орқага',
+      ru: '⬅️ Назад',
+    },
+  },
+  selectLangTitle: {
+    uz_lat: '🌐 Yangi tilni tanlang:',
+    uz_cyr: '🌐 Янги тилни танланг:',
+    ru: '🌐 Выберите язык:',
+  },
+};
 
 export function registerSettingsHandler(bot: Telegraf) {
-  // ⚙️ SOZLAMALAR
+
+  // 1. Sozlamalar menyusi
   bot.action('settings', async (ctx) => {
     try {
       await ctx.answerCbQuery();
 
-      const telegramId = ctx.from.id.toString();
-      const language = await getUserLanguage(telegramId);
+      const telegramId = ctx.from?.id.toString();
+      const rawLang = telegramId ? await getUserLanguage(telegramId) : undefined;
+      const lang = resolveLang(rawLang);
 
-      if (language === 'ru') {
-        await ctx.reply(
-          '⚙️ Настройки\n\n' +
-            'Выберите нужный раздел:',
-          Markup.inlineKeyboard([
-            [
-              Markup.button.callback(
-                '🌐 Изменить язык',
-                'change_language',
-              ),
-            ],
-            [
-              Markup.button.callback(
-                '⬅️ Главное меню',
-                'main_menu',
-              ),
-            ],
-          ]),
-        );
+      const text = SETTINGS_I18N.title[lang];
+      const keyboard = Markup.inlineKeyboard([
+        [Markup.button.callback(SETTINGS_I18N.buttons.changeLang[lang], 'change_language')],
+        [Markup.button.callback(SETTINGS_I18N.buttons.mainMenu[lang], 'main_menu')],
+      ]);
 
+      if (ctx.callbackQuery && 'message' in ctx.callbackQuery) {
+        await ctx.editMessageText(text, {
+          parse_mode: 'Markdown',
+          ...keyboard,
+        });
         return;
       }
 
-      if (language === 'uz_cyr') {
-        await ctx.reply(
-          '⚙️ Созламалар\n\n' +
-            'Керакли бўлимни танланг:',
-          Markup.inlineKeyboard([
-            [
-              Markup.button.callback(
-                '🌐 Тилни ўзгартириш',
-                'change_language',
-              ),
-            ],
-            [
-              Markup.button.callback(
-                '⬅️ Асосий меню',
-                'main_menu',
-              ),
-            ],
-          ]),
-        );
-
-        return;
-      }
-
-      await ctx.reply(
-        '⚙️ Sozlamalar\n\n' +
-          'Kerakli bo‘limni tanlang:',
-        Markup.inlineKeyboard([
-          [
-            Markup.button.callback(
-              '🌐 Tilni o‘zgartirish',
-              'change_language',
-            ),
-          ],
-          [
-            Markup.button.callback(
-              '⬅️ Asosiy menyu',
-              'main_menu',
-            ),
-          ],
-        ]),
-      );
+      await ctx.reply(text, {
+        parse_mode: 'Markdown',
+        ...keyboard,
+      });
     } catch (error) {
-      console.error('Settings error:', error);
+      console.error('❌ Settings action error:', error);
     }
   });
 
-  // 🌐 TILNI O‘ZGARTIRISH
+  // 2. Tilni o'zgartirish oynasi
   bot.action('change_language', async (ctx) => {
     try {
       await ctx.answerCbQuery();
 
-      await ctx.reply(
-        '🌐 Tilni tanlang:',
-        Markup.inlineKeyboard([
-          [
-            Markup.button.callback(
-              '🇺🇿 O‘zbek (lotin)',
-              'lang_uz_lat',
-            ),
-          ],
-          [
-            Markup.button.callback(
-              '🇺🇿 Ўзбек (кирилл)',
-              'lang_uz_cyr',
-            ),
-          ],
-          [
-            Markup.button.callback(
-              '🇷🇺 Русский',
-              'lang_ru',
-            ),
-          ],
-        ]),
-      );
+      const telegramId = ctx.from?.id.toString();
+      const rawLang = telegramId ? await getUserLanguage(telegramId) : undefined;
+      const lang = resolveLang(rawLang);
+
+      const text = SETTINGS_I18N.selectLangTitle[lang];
+      const keyboard = Markup.inlineKeyboard([
+        [Markup.button.callback('🇺🇿 O‘zbek (lotin)', 'lang_uz_lat')],
+        [Markup.button.callback('🇺🇿 Ўзбек (кирилл)', 'lang_uz_cyr')],
+        [Markup.button.callback('🇷🇺 Русский', 'lang_ru')],
+        [Markup.button.callback(SETTINGS_I18N.buttons.back[lang], 'settings')],
+      ]);
+
+      if (ctx.callbackQuery && 'message' in ctx.callbackQuery) {
+        await ctx.editMessageText(text, {
+          parse_mode: 'Markdown',
+          ...keyboard,
+        });
+        return;
+      }
+
+      await ctx.reply(text, {
+        parse_mode: 'Markdown',
+        ...keyboard,
+      });
     } catch (error) {
-      console.error(
-        'Change language error:',
-        error,
-      );
-    }
-  });
-
-  // ⬅️ ASOSIY MENYU
-  bot.action('main_menu', async (ctx) => {
-    try {
-      await ctx.answerCbQuery();
-
-      const telegramId = ctx.from.id.toString();
-      const language =
-        await getUserLanguage(telegramId);
-
-      await sendMainMenu(ctx, language);
-    } catch (error) {
-      console.error(
-        'Main menu error:',
-        error,
-      );
+      console.error('❌ Change language action error:', error);
     }
   });
 }

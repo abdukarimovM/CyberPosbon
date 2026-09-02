@@ -5,17 +5,50 @@ import {
   UploadedFile,
   UseInterceptors,
   BadRequestException,
+  HttpCode,
+  HttpStatus,
 } from '@nestjs/common';
+import { FileInterceptor } from '@nestjs/platform-express';
+import * as fs from 'fs/promises';
+import { existsSync } from 'fs';
 
 import { GoogleSafeBrowsingScanner } from './providers/google-safe-browsing.scanner';
 import { UrlhausScanner } from './providers/urlhaus.scanner';
-import { RiskEngineService } from './risk/risk-engine.service';
-import { ScannerService } from './scanner.service';
 import { VirusTotalScanner } from './providers/virustotal.scanner';
 import { UrlscanScanner } from './providers/urlscan.scanner';
+import { ScannerService } from './scanner.service';
+import { RiskEngineService } from './risk/risk-engine.service';
 import { ScannerResult } from './interfaces/scanner-result.interface';
 
-import { FileInterceptor } from '@nestjs/platform-express';
+// Multer tipi mavjud bo'lmaganda xatolik bermasligi uchun interfeys
+interface UploadedFileType {
+  fieldname: string;
+  originalname: string;
+  encoding: string;
+  mimetype: string;
+  size: number;
+  destination: string;
+  filename: string;
+  path: string;
+}
+
+interface CheckUrlDto {
+  url: string;
+}
+
+interface DeepScanDto {
+  url: string;
+  results?: ScannerResult[];
+}
+
+interface DeepScanStatusDto {
+  resultUrl: string;
+  results?: ScannerResult[];
+}
+
+interface CheckFileStatusDto {
+  analysisId: string;
+}
 
 @Controller('scanner')
 export class ScannerController {
@@ -29,7 +62,12 @@ export class ScannerController {
   ) { }
 
   @Post('check')
-  async check(@Body() body: { url: string }) {
+  @HttpCode(HttpStatus.OK)
+  async check(@Body() body: CheckUrlDto) {
+    if (!body?.url) {
+      throw new BadRequestException('Tekshirish uchun URL yuborilmadi.');
+    }
+
     const results = await this.scannerService.scanUrl(body.url, [
       this.googleScanner,
       this.urlhausScanner,
@@ -37,196 +75,102 @@ export class ScannerController {
     ]);
 
     const status = this.riskEngine.analyze(results);
-
     const score = this.riskEngine.calculateScore(results);
-
     const riskLevel = this.scannerService.getRiskLevel(score, status);
 
     return {
       url: body.url,
-
       status,
-
       risk: {
         score,
         level: riskLevel,
       },
-
       results,
     };
   }
 
   @Post('deep-scan')
-  async deepScan(
-    @Body()
-    body: {
-      url: string;
-      results?: ScannerResult[];
-    },
-  ) {
-    const result = await this.scannerService.startUrlscanDeep(body.url);
+  @HttpCode(HttpStatus.OK)
+  async deepScan(@Body() body: DeepScanDto) {
+    if (!body?.url) {
+      throw new BadRequestException('URL ko‘rsatilmadi.');
+    }
 
+    const result = await this.scannerService.startUrlscanDeep(body.url);
     const raw =
       result.raw && typeof result.raw === 'object'
-        ? (result.raw as {
-          pending?: boolean;
-          resultUrl?: string;
-        })
+        ? (result.raw as { pending?: boolean; resultUrl?: string })
         : null;
 
     return {
       url: body.url,
-
       status: result.status,
-
       message: result.message,
-
       result,
-
       deepScan: {
         started: result.status === 'unknown' && raw?.pending === true,
-
         pending: raw?.pending === true,
-
         resultUrl: raw?.resultUrl ?? null,
       },
     };
   }
 
   @Post('deep-scan/status')
-  async deepScanStatus(
-    @Body()
-    body: {
-      resultUrl: string;
-      results?: ScannerResult[];
-    },
-  ) {
-    const result = await this.scannerService.pollUrlscanDeep(
+  @HttpCode(HttpStatus.OK)
+  async deepScanStatus(@Body() body: DeepScanStatusDto) {
+    if (!body?.resultUrl) {
+      throw new BadRequestException('resultUrl parametri kiritilmadi.');
+    }
+
+    return this.scannerService.pollUrlscanDeep(
       body.resultUrl,
       body.results || [],
     );
-
-    return result;
-  }
-
-  @Post('deep-poll')
-  async deepPoll(
-    @Body()
-    body: {
-      resultUrl: string;
-      results?: ScannerResult[];
-    },
-  ) {
-    if (!body.resultUrl) {
-      return {
-        status: 'unknown',
-        message: 'URLScan resultUrl berilmagan.',
-      };
-    }
-
-    const result = await this.scannerService.pollUrlscanDeep(
-      body.resultUrl,
-      body.results ?? [],
-    );
-
-    return {
-      result: result.result,
-      finalRisk: result.finalRisk,
-    };
-  }
-
-  // Eski test endpointlari.
-  @Post('google')
-  async googleScan(@Body() body: { url: string }) {
-    return this.googleScanner.scan(body.url);
-  }
-
-  @Post('urlhaus')
-  async urlhausScan(@Body() body: { url: string }) {
-    return this.urlhausScanner.scan(body.url);
-  }
-
-  @Post('urlscan-search')
-  async urlscanSearch(@Body() body: { url: string }) {
-    return this.urlscanScanner.search(body.url);
-  }
-
-  @Post('urlscan-submit')
-  async urlscanSubmit(@Body() body: { url: string }) {
-    return this.urlscanScanner.submitScan(body.url);
-  }
-
-  @Post('urlscan-result')
-  async urlscanResult(@Body() body: { resultUrl: string }) {
-    return this.urlscanScanner.getResult(body.resultUrl);
-  }
-
-  @Post('urlscan-smart')
-  async urlscanSmart(@Body() body: { url: string }) {
-    return this.urlscanScanner.smartScan(body.url);
-  }
-
-  @Post('urlscan-poll')
-  async urlscanPoll(@Body() body: { resultUrl: string }) {
-    return this.urlscanScanner.pollResult(body.resultUrl);
   }
 
   @Post('file/check')
   @UseInterceptors(
     FileInterceptor('file', {
       dest: './uploads',
-
       limits: {
         fileSize: 100 * 1024 * 1024, // 100 MB
       },
     }),
   )
-  async checkFile(@UploadedFile() file: any) {
+  async checkFile(@UploadedFile() file: UploadedFileType) {
     if (!file) {
-      throw new BadRequestException(
-        'Fayl yuborilmadi.',
-      );
+      throw new BadRequestException('Fayl yuklanmadi.');
     }
 
-    console.log(
-      '📱 Fayl qabul qilindi:',
-      file.originalname,
-    );
+    console.log(`📱 Fayl qabul qilindi: ${file.originalname} (${file.size} bytes)`);
 
-    const result =
-      await this.scannerService.scanFile(
-        file.path,
-      );
+    try {
+      const result = await this.scannerService.scanFile(file.path);
 
-    return {
-      filename: file.originalname,
-      mimetype: file.mimetype,
-      size: file.size,
-      ...result,
-    };
+      return {
+        filename: file.originalname,
+        mimetype: file.mimetype,
+        size: file.size,
+        ...result,
+      };
+    } finally {
+      // Vaqtinchalik faylni server diskidan o'chirish
+      if (file.path && existsSync(file.path)) {
+        await fs.unlink(file.path).catch((err) => {
+          console.error(`⚠️ Faylni tozalashda xatolik (${file.path}):`, err);
+        });
+      }
+    }
   }
 
   @Post('file/check-status')
-  async checkFileStatus(
-    @Body()
-    body: {
-      analysisId: string;
-    },
-  ) {
-    if (!body.analysisId) {
-      throw new BadRequestException(
-        'analysisId yuborilmadi.',
-      );
+  @HttpCode(HttpStatus.OK)
+  async checkFileStatus(@Body() body: CheckFileStatusDto) {
+    if (!body?.analysisId) {
+      throw new BadRequestException('analysisId parametri yuborilmadi.');
     }
 
-    const result =
-      await this.scannerService.checkFileAnalysis(
-        body.analysisId,
-      );
-
-    // =====================================================
-    // ⏳ TAHLIL HALI TUGAMAGAN
-    // =====================================================
+    const result = await this.scannerService.checkFileAnalysis(body.analysisId);
 
     if (result.status === 'unknown') {
       return {
@@ -237,50 +181,19 @@ export class ScannerController {
       };
     }
 
-    // =====================================================
-    // 🧠 RISK ENGINE
-    // =====================================================
-
-    const score =
-      this.riskEngine.calculateScore([
-        result,
-      ]);
-
-    const level =
-      this.riskEngine.getRiskLevel(
-        score,
-        result.status,
-      );
-
-    console.log(
-      '🧠 FILE FINAL RISK:',
-      {
-        status: result.status,
-        score,
-        level,
-      },
-    );
-
-    // =====================================================
-    // ✅ YAKUNIY NATIJA
-    // =====================================================
+    const score = this.riskEngine.calculateScore([result]);
+    const level = this.riskEngine.getRiskLevel(score, result.status);
 
     return {
       analysisId: body.analysisId,
-
       status: result.status,
-
       pending: false,
-
       score,
-
       risk: {
         score,
         level,
       },
-
       message: result.message,
-
       result,
     };
   }

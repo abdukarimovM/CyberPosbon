@@ -1,9 +1,11 @@
 {
 	"dependencies": {
+		"@nestjs/config": "^12.0.0",
 		"form-data": "^4.0.6",
 		"multer": "^2.2.0"
 	},
 	"devDependencies": {
+		"@types/jest": "^30.0.0",
 		"@types/multer": "^2.2.0"
 	}
 }

@@ -1,99 +1,87 @@
 import { Injectable } from '@nestjs/common';
-
 import { ScannerResult } from '../interfaces/scanner-result.interface';
 
 @Injectable()
 export class UrlhausScanner {
-  private readonly authKey =
-    process.env.URLHAUS_AUTH_KEY;
+  private readonly apiUrl = 'https://urlhaus-api.abuse.ch/v1/url/';
+  private readonly authKey = process.env.URLHAUS_AUTH_KEY;
 
-  async scan(
-    url: string,
-  ): Promise<ScannerResult> {
-    if (!this.authKey) {
-      return {
-        provider: 'urlhaus',
-        status: 'unknown',
-        message:
-          'URLHAUS_AUTH_KEY topilmadi.',
-      };
-    }
-
+  async scan(url: string): Promise<ScannerResult> {
     try {
-      const body = new URLSearchParams({
-        url,
+      const headers: Record<string, string> = {
+        'Content-Type': 'application/x-www-form-urlencoded',
+        Accept: 'application/json',
+      };
+
+      // Agar Auth-Key mavjud bo'lsa qo'shamiz (URLhaus ayrim so'rovlarni kalitsiz ham cheklangan holda qabul qiladi)
+      if (this.authKey) {
+        headers['Auth-Key'] = this.authKey;
+      }
+
+      const body = new URLSearchParams({ url });
+
+      const response = await fetch(this.apiUrl, {
+        method: 'POST',
+        headers,
+        body: body.toString(),
+        signal: AbortSignal.timeout(10000),
       });
 
-      const response = await fetch(
-        'https://urlhaus-api.abuse.ch/v1/url/',
-        {
-          method: 'POST',
-          headers: {
-            'Auth-Key': this.authKey,
-            'Content-Type':
-              'application/x-www-form-urlencoded',
-            Accept: 'application/json',
-          },
-          body: body.toString(),
-        },
-      );
-
-      const responseText =
-        await response.text();
-
-      console.log(
-        'URLhaus HTTP status:',
-        response.status,
-      );
-
-      console.log(
-        'URLhaus response:',
-        responseText,
-      );
+      const responseText = await response.text();
 
       if (!response.ok) {
+        console.error(`URLhaus HTTP xatosi (${response.status}):`, responseText);
         return {
           provider: 'urlhaus',
           status: 'unknown',
-          message:
-            `URLhaus API xatosi: HTTP ${response.status}`,
+          message: `URLhaus API xatosi: HTTP ${response.status}`,
           raw: responseText,
         };
       }
 
-      const data = JSON.parse(responseText);
+      let data: any;
+      try {
+        data = JSON.parse(responseText);
+      } catch {
+        return {
+          provider: 'urlhaus',
+          status: 'unknown',
+          message: 'URLhaus javobini tahlil qilib bo‘lmadi.',
+          raw: responseText,
+        };
+      }
 
+      // 1. ZARARLI MANBA SIFATIDA TOPILDI
       if (data.query_status === 'ok') {
+        const threat = data.threat || 'malware';
+        const tags = Array.isArray(data.tags) ? data.tags.join(', ') : '';
+        const tagText = tags ? ` (Teglar: ${tags})` : '';
+
         return {
           provider: 'urlhaus',
           status: 'dangerous',
           categories: ['malware'],
-          message:
-            'URLhaus ushbu URLni malware tarqatuvchi manba sifatida topdi.',
+          message: `URLhaus: Zararli manba aniqlandi! Tahdid: ${threat}${tagText}`,
           raw: data,
         };
       }
 
-      if (
-        data.query_status === 'no_results'
-      ) {
+      // 2. TAHdid TOPILMADI (URLhaus qora ro'yxatida yo'q)
+      if (data.query_status === 'no_results') {
         return {
           provider: 'urlhaus',
-          status: 'unknown',
-          message:
-            'URLhaus bazasida ushbu URL bo‘yicha yozuv topilmadi.',
+          status: 'safe',
+          message: 'URLhaus bazasida zararli faoliyat aniqlanmadi.',
           raw: data,
         };
       }
 
-      if (
-        data.query_status === 'invalid_url'
-      ) {
+      // 3. YAROQSIZ URL FORMATI
+      if (data.query_status === 'invalid_url') {
         return {
           provider: 'urlhaus',
           status: 'unknown',
-          message:
-            'URLhaus URLni yaroqli URL deb tanimadi.',
+          message: 'URLhaus havolani yaroqli deb topmadi.',
           raw: data,
         };
       }
@@ -101,22 +89,18 @@ export class UrlhausScanner {
       return {
         provider: 'urlhaus',
         status: 'unknown',
-        message:
-          'URLhaus aniq natija qaytarmadi.',
+        message: 'URLhaus aniq maʼlumot bermadi.',
         raw: data,
       };
+
     } catch (error: any) {
-      console.error(
-        'URLhaus scanner error:',
-        error?.message || error,
-      );
+      console.error('❌ URLhaus scanner error:', error?.message || error);
 
       return {
         provider: 'urlhaus',
         status: 'unknown',
-        message:
-          'URLhaus bilan bog‘lanishda xatolik yuz berdi.',
-        raw: error?.message || error,
+        message: 'URLhaus xizmati bilan bog‘lanishda xatolik yuz berdi.',
+        raw: error?.message,
       };
     }
   }

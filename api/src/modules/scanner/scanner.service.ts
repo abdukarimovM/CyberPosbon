@@ -1,11 +1,7 @@
 import { Injectable } from '@nestjs/common';
 import { UrlscanScanner } from './providers/urlscan.scanner';
-
 import { ScannerResult } from './interfaces/scanner-result.interface';
-
-import { FileHashService } from './file/file-hash.service';
 import { VirusTotalFileScanner } from './providers/virustotal-file.scanner';
-
 import { RiskEngineService } from './risk/risk-engine.service';
 
 @Injectable()
@@ -13,15 +9,11 @@ export class ScannerService {
   constructor(
     private readonly riskEngine: RiskEngineService,
     private readonly urlscanScanner: UrlscanScanner,
-    private readonly fileHashService: FileHashService,
     private readonly virusTotalFileScanner: VirusTotalFileScanner,
   ) { }
+
   /**
-   * Bir nechta scanner natijalarini yig‘adi.
-   *
-   * Muhim:
-   * scannerlar ketma-ket emas,
-   * parallel ishlaydi.
+   * Bir nechta URL scanner natijalarini parallel yig‘adi.
    */
   async scanUrl(
     url: string,
@@ -29,13 +21,12 @@ export class ScannerService {
       scan: (url: string) => Promise<ScannerResult>;
     }>,
   ): Promise<ScannerResult[]> {
-    const results = await Promise.all(
+    return Promise.all(
       scanners.map(async (scanner): Promise<ScannerResult> => {
         try {
           return await scanner.scan(url);
         } catch (error) {
           console.error('Scanner error:', error);
-
           return {
             provider: 'unknown',
             status: 'unknown',
@@ -44,38 +35,34 @@ export class ScannerService {
         }
       }),
     );
-
-    return results;
   }
 
-  /**
-   * Scanner natijalaridan umumiy
-   * xavf darajasini Risk Engine orqali aniqlaydi.
-   */
   calculateStatus(results: ScannerResult[]): ScannerResult['status'] {
     return this.riskEngine.analyze(results);
   }
 
+  calculateScore(results: ScannerResult[]): number {
+    return this.riskEngine.calculateScore(results);
+  }
+
+  getRiskLevel(
+    score: number,
+    status: ScannerResult['status'],
+  ): 'safe' | 'suspicious' | 'dangerous' | 'unknown' {
+    return this.riskEngine.getRiskLevel(score, status);
+  }
+
   /**
-   * URLScan chuqur tahlilini BOSHLAYDI.
-   *
-   * Muhim:
-   * - URLScan natijasini kutib turmaydi.
-   * - Polling qilmaydi.
-   * - Faqat scan boshlanganini va resultUrl'ni qaytaradi.
+   * URLScan chuqur tahlilini boshlash
    */
   async startUrlscanDeep(url: string): Promise<ScannerResult> {
     try {
       console.log('🔬 URLScan deep scan boshlandi:', url);
-
       const smartResult = await this.urlscanScanner.smartScan(url);
-
       console.log('🔬 URLScan smart result:', smartResult.message);
-
       return smartResult;
     } catch (error) {
       console.error('❌ URLScan deep scan error:', error);
-
       return {
         provider: 'urlscan',
         status: 'unknown',
@@ -86,18 +73,11 @@ export class ScannerService {
       };
     }
   }
-  /**
-   * Tezkor scanner natijalariga
-   * URLScan final natijasini qo‘shib,
-   * yakuniy riskni hisoblaydi.
-   */
+
   calculateFinalRisk(results: ScannerResult[], urlscanResult: ScannerResult) {
     const allResults = [...results, urlscanResult];
-
     const status = this.riskEngine.analyze(allResults);
-
     const score = this.riskEngine.calculateScore(allResults);
-
     const level = this.riskEngine.getRiskLevel(score, status);
 
     return {
@@ -110,12 +90,6 @@ export class ScannerService {
     };
   }
 
-  /**
-   * URLScan chuqur tahlili natijasini oladi.
-   *
-   * Bu metod faqat foydalanuvchi
-   * "Natijani tekshirish" tugmasini bosganda ishlaydi.
-   */
   async pollUrlscanDeep(
     resultUrl: string,
     results: ScannerResult[] = [],
@@ -132,26 +106,15 @@ export class ScannerService {
   }> {
     try {
       console.log('🔄 URLScan deep result tekshirilmoqda:', resultUrl);
-
       const urlscanResult = await this.urlscanScanner.pollResult(resultUrl);
 
-      console.log(
-        '✅ URLScan result:',
-        urlscanResult.status,
-        urlscanResult.message,
-      );
-
       const finalRisk = this.calculateFinalRisk(results, urlscanResult);
-
-      console.log('🧠 FINAL RISK:', finalRisk);
-
       return {
         result: urlscanResult,
         finalRisk,
       };
     } catch (error) {
       console.error('❌ URLScan deep polling error:', error);
-
       const errorResult: ScannerResult = {
         provider: 'urlscan',
         status: 'unknown',
@@ -162,7 +125,6 @@ export class ScannerService {
       };
 
       const finalRisk = this.calculateFinalRisk(results, errorResult);
-
       return {
         result: errorResult,
         finalRisk,
@@ -171,126 +133,71 @@ export class ScannerService {
   }
 
   /**
-   * Umumiy risk score.
+   * Faylni (APK, EXE va b.) tekshirish
    */
-  calculateScore(results: ScannerResult[]): number {
-    return this.riskEngine.calculateScore(results);
+  async scanFile(filePath: string) {
+    console.log('📱 Fayl tekshiruvi boshlandi:', filePath);
+
+    try {
+      const result = await this.virusTotalFileScanner.scan(filePath);
+      const score = this.riskEngine.calculateScore([result]);
+      const level = this.riskEngine.getRiskLevel(score, result.status);
+
+      const raw = result.raw && typeof result.raw === 'object' ? result.raw : {};
+      const hasReport = 'report' in raw;
+      const isPending = 'pending' in raw ? Boolean((raw as any).pending) : false;
+
+      return {
+        status: result.status,
+        risk: {
+          score,
+          level,
+        },
+        score,
+        found: hasReport,
+        sha256: (raw as any)?.sha256 ?? null,
+        message: result.message,
+        report: (raw as any)?.report ?? null,
+        analysisId: (raw as any)?.analysisId ?? null,
+        pending: isPending,
+        result,
+      };
+    } catch (error) {
+      console.error('❌ File scan error:', error);
+      return {
+        status: 'unknown' as const,
+        risk: {
+          score: 0,
+          level: 'unknown' as const,
+        },
+        score: 0,
+        found: false,
+        sha256: null,
+        message: 'Faylni skanerlashda xatolik yuz berdi.',
+        pending: false,
+        result: {
+          provider: 'virustotal-file',
+          status: 'unknown' as const,
+          message: 'Fayl skanerida kutilmagan xatolik.',
+        },
+      };
+    }
   }
 
   /**
-   * Score va umumiy status asosida
-   * yakuniy risk darajasini aniqlaydi.
+   * Asinxron fayl tahlili holatini olish
    */
-  getRiskLevel(
-    score: number,
-    status: ScannerResult['status'],
-  ): 'safe' | 'suspicious' | 'dangerous' | 'unknown' {
-    return this.riskEngine.getRiskLevel(score, status);
-  }
-
-  async checkDeepScanResult(resultUrl: string): Promise<ScannerResult> {
-    return this.urlscanScanner.getResult(resultUrl);
-  }
-
-  async scanFile(filePath: string) {
-    console.log('📱 APK fayl tekshiruvi boshlandi');
-
-    const result =
-      await this.virusTotalFileScanner.scan(filePath);
-
-    const score =
-      this.riskEngine.calculateScore([
-        result,
-      ]);
-
-    const level =
-      this.riskEngine.getRiskLevel(
-        score,
-        result.status,
-      );
-
-    console.log(
-      '🛡️ File status:',
-      result.status,
-    );
-
-    console.log(
-      '🎯 File risk score:',
-      score,
-    );
-
-    console.log(
-      '🚦 File risk level:',
-      level,
-    );
-
-    return {
-      status: result.status,
-
-      risk: {
-        score,
-        level,
-      },
-
-      score,
-
-      found:
-        result.raw &&
-          typeof result.raw === 'object' &&
-          'report' in result.raw
-          ? true
-          : false,
-
-      sha256:
-        result.raw &&
-          typeof result.raw === 'object' &&
-          'sha256' in result.raw
-          ? result.raw.sha256
-          : null,
-
-      message: result.message,
-
-      report:
-        result.raw &&
-          typeof result.raw === 'object' &&
-          'report' in result.raw
-          ? result.raw.report
-          : null,
-
-      analysisId:
-        result.raw &&
-          typeof result.raw === 'object' &&
-          'analysisId' in result.raw
-          ? result.raw.analysisId
-          : null,
-
-      pending:
-        result.raw &&
-          typeof result.raw === 'object' &&
-          'pending' in result.raw
-          ? result.raw.pending
-          : false,
-
-      result,
-    };
-  }
-
   async checkFileAnalysis(analysisId: string): Promise<ScannerResult> {
     try {
-      console.log('🔄 VirusTotal APK analysis tekshirilmoqda:', analysisId);
-
+      console.log('🔄 VirusTotal fayl tahlili tekshirilmoqda:', analysisId);
       const analysis = await this.virusTotalFileScanner.getAnalysis(analysisId);
-
       const status = analysis?.data?.attributes?.status;
 
-      console.log('📱 VirusTotal analysis status:', status);
-
-      // Hali tayyor emas
       if (status !== 'completed') {
         return {
           provider: 'virustotal-file',
           status: 'unknown',
-          message: 'Fayl tahlili hali tugamadi.',
+          message: 'Fayl tahlili hali davom etmoqda.',
           raw: {
             analysisId,
             pending: true,
@@ -299,15 +206,11 @@ export class ScannerService {
         };
       }
 
-      // Tayyor natija
       const stats = analysis?.data?.attributes?.stats;
-
       const malicious = stats?.malicious ?? 0;
-
       const suspicious = stats?.suspicious ?? 0;
 
-      let riskStatus: 'safe' | 'suspicious' | 'dangerous' | 'unknown' =
-        'unknown';
+      let riskStatus: 'safe' | 'suspicious' | 'dangerous' | 'unknown' = 'unknown';
 
       if (malicious > 0) {
         riskStatus = 'dangerous';
@@ -322,12 +225,12 @@ export class ScannerService {
         status: riskStatus,
         message:
           riskStatus === 'dangerous'
-            ? 'Faylda zararli faoliyat belgilari aniqlandi.'
+            ? `Faylda xavf aniqlandi! (${malicious} ta antivirus xavfli deb topdi)`
             : riskStatus === 'suspicious'
-              ? 'Faylda shubhali faoliyat belgilari aniqlandi.'
+              ? 'Faylda shubhali faoliyat aniqlandi.'
               : riskStatus === 'safe'
-                ? 'Faylda zararli faoliyat aniqlanmadi.'
-                : 'Fayl bo‘yicha yetarli ma’lumot mavjud emas.',
+                ? 'Fayl toza deb topildi.'
+                : 'Fayl bo‘yicha yetarli ma’lumot topilmadi.',
         raw: {
           analysisId,
           stats,
@@ -336,7 +239,6 @@ export class ScannerService {
       };
     } catch (error) {
       console.error('❌ File analysis check error:', error);
-
       return {
         provider: 'virustotal-file',
         status: 'unknown',

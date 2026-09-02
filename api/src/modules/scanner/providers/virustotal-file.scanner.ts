@@ -1,59 +1,44 @@
 import { Injectable } from '@nestjs/common';
 import axios from 'axios';
 import * as fs from 'fs';
-import * as crypto from 'crypto';
+import { promises as fsPromises } from 'fs';
+import FormData from 'form-data';
+import { FileHashService } from '../file/file-hash.service';
+
+export interface VirusTotalFileResult {
+  provider: string;
+  status: 'safe' | 'suspicious' | 'dangerous' | 'unknown';
+  message: string;
+  raw?: any;
+}
 
 @Injectable()
 export class VirusTotalFileScanner {
   private readonly apiUrl = 'https://www.virustotal.com/api/v3';
-
   private readonly apiKey = process.env.VIRUSTOTAL_API_KEY;
 
-  async calculateSha256(filePath: string): Promise<string> {
-    return new Promise((resolve, reject) => {
-      const hash = crypto.createHash('sha256');
+  constructor(private readonly fileHashService: FileHashService) { }
 
-      const stream = fs.createReadStream(filePath);
-
-      stream.on('data', (chunk) => {
-        hash.update(chunk);
-      });
-
-      stream.on('end', () => {
-        resolve(hash.digest('hex'));
-      });
-
-      stream.on('error', (error) => {
-        reject(error);
-      });
-    });
-  }
-
-  async scan(filePath: string): Promise<{
-    provider: string;
-    status: 'safe' | 'suspicious' | 'dangerous' | 'unknown';
-    message: string;
-    raw?: any;
-  }> {
+  /**
+   * Faylni to'liq tekshirish (Hash -> Qidiruv -> Zarur bo'lsa Upload)
+   */
+  async scan(filePath: string): Promise<VirusTotalFileResult> {
     try {
-      console.log('🔍 VirusTotal APK tekshiruvi boshlandi');
+      console.log('🔍 VirusTotal fayl tekshiruvi boshlandi');
 
-      // 1️⃣ SHA-256 hisoblaymiz
-      const sha256 = await this.calculateSha256(filePath);
+      // 1. Fayldan SHA-256 xesh olamiz
+      const sha256 = await this.fileHashService.calculateSha256(filePath);
+      console.log('🔐 Fayl SHA-256:', sha256);
 
-      console.log('🔐 SHA-256:', sha256);
-
-      // 2️⃣ VirusTotal bazasidan hashni qidiramiz
+      // 2. Xesh orqali bazadan qidiramiz
       const report = await this.getFileReport(sha256);
 
-      // 3️⃣ VirusTotal bazasida mavjud
+      // 3. Agar fayl bazada mavjud bo'lsa (Tezkor natija)
       if (report) {
-        console.log('✅ VirusTotal: fayl bazada mavjud');
+        console.log('✅ VirusTotal: Fayl allaqachon bazada mavjud');
 
         const stats = report?.data?.attributes?.last_analysis_stats;
-
         const malicious = stats?.malicious ?? 0;
-
         const suspicious = stats?.suspicious ?? 0;
 
         let status: 'safe' | 'suspicious' | 'dangerous' | 'unknown' = 'unknown';
@@ -71,11 +56,11 @@ export class VirusTotalFileScanner {
           status,
           message:
             status === 'dangerous'
-              ? 'VirusTotal faylda zararli faoliyat aniqladi.'
+              ? `VirusTotal: ${malicious} ta antivirus xavf aniqladi.`
               : status === 'suspicious'
-                ? 'VirusTotal faylni shubhali deb baholadi.'
+                ? 'VirusTotal: Shubhali faoliyat aniqlandi.'
                 : status === 'safe'
-                  ? 'VirusTotal faylda zararli faoliyat aniqlamadi.'
+                  ? 'VirusTotal: Zararli faoliyat aniqlanmadi.'
                   : 'VirusTotal fayl bo‘yicha yetarli ma’lumot bermadi.',
           raw: {
             sha256,
@@ -85,31 +70,32 @@ export class VirusTotalFileScanner {
         };
       }
 
-      // 4️⃣ Bazada mavjud emas — VirusTotal'ga yuklaymiz
-      console.log(
-        '📤 VirusTotal: fayl bazada topilmadi, upload boshlanmoqda...',
-      );
-
+      // 4. Bazada mavjud bo'lmasa -> Upload
+      console.log('📤 VirusTotal: Fayl bazada yo‘q, yuklash boshlanmoqda...');
       const analysisId = await this.uploadFile(filePath);
 
       return {
         provider: 'virustotal-file',
         status: 'unknown',
-        message:
-          'Fayl VirusTotal tahliliga yuborildi. Tahlil natijasi hali tayyor emas.',
+        message: 'Fayl VirusTotal tahliliga yuborildi. Tahlil hali davom etmoqda.',
         raw: {
           sha256,
           analysisId,
           pending: true,
         },
       };
-    } catch (error) {
-      console.error('❌ VirusTotal file scan error:', error);
+
+    } catch (error: any) {
+      console.error('❌ VirusTotal file scan error:', error?.response?.data || error?.message || error);
+
+      const isRateLimit = error?.response?.status === 429;
 
       return {
         provider: 'virustotal-file',
         status: 'unknown',
-        message: 'Faylni VirusTotal orqali tekshirishda xatolik yuz berdi.',
+        message: isRateLimit
+          ? 'VirusTotal API so‘rovlar limiti tugadi (Birozdan so‘ng qayta urinib ko‘ring).'
+          : 'Faylni VirusTotal orqali tekshirishda xatolik yuz berdi.',
         raw: {
           error: error instanceof Error ? error.message : String(error),
         },
@@ -117,6 +103,9 @@ export class VirusTotalFileScanner {
     }
   }
 
+  /**
+   * SHA-256 orqali tayyor hisobotni olish
+   */
   async getFileReport(sha256: string): Promise<any> {
     if (!this.apiKey) {
       throw new Error('VIRUSTOTAL_API_KEY .env faylida topilmadi');
@@ -134,189 +123,83 @@ export class VirusTotalFileScanner {
       if (error.response?.status === 404) {
         return null;
       }
-
       throw error;
     }
   }
 
+  /**
+   * Faylni VirusTotal serveriga yuklash
+   */
   async uploadFile(filePath: string): Promise<string> {
     if (!this.apiKey) {
-      throw new Error(
-        'VIRUSTOTAL_API_KEY .env faylida topilmadi',
-      );
+      throw new Error('VIRUSTOTAL_API_KEY .env faylida topilmadi');
     }
 
     try {
-      console.log(
-        '📤 VirusTotal fayl yuklash boshlandi...',
-      );
+      const fileStats = await fsPromises.stat(filePath);
+      const fileSize = fileStats.size;
+      const MAX_DIRECT_UPLOAD = 32 * 1024 * 1024; // 32 MB
 
-      const FormData =
-        (await import('form-data')).default;
+      let uploadUrl = `${this.apiUrl}/files`;
 
-      // =====================================================
-      // 📏 FAYL HAJMINI ANIQLASH
-      // =====================================================
-
-      const stats =
-        fs.statSync(filePath);
-
-      const fileSize =
-        stats.size;
-
-      const fileSizeMB =
-        fileSize /
-        (1024 * 1024);
-
-      console.log(
-        `📦 Fayl hajmi: ${fileSizeMB.toFixed(2)} MB`,
-      );
-
-      // VirusTotal 32 MB chegarasi
-      const MAX_DIRECT_UPLOAD =
-        32 * 1024 * 1024;
-
-      let uploadUrl =
-        `${this.apiUrl}/files`;
-
-      // =====================================================
-      // 📦 32 MB DAN KATTA FAYL
-      // =====================================================
-
-      if (
-        fileSize >
-        MAX_DIRECT_UPLOAD
-      ) {
-        console.log(
-          '📦 Fayl 32 MB dan katta.',
-        );
-
-        console.log(
-          '🔗 VirusTotal katta fayl uchun upload URL olinmoqda...',
-        );
-
-        const uploadUrlResponse =
-          await axios.get(
-            `${this.apiUrl}/files/upload_url`,
-            {
-              headers: {
-                'x-apikey':
-                  this.apiKey,
-              },
-            },
-          );
-
-        uploadUrl =
-          uploadUrlResponse.data?.data;
-
-        if (!uploadUrl) {
-          throw new Error(
-            'VirusTotal upload URL qaytarmadi.',
-          );
-        }
-
-        console.log(
-          '✅ Katta fayl uchun upload URL olindi.',
-        );
-      }
-
-      // =====================================================
-      // 📤 FAYLNI YUKLASH
-      // =====================================================
-
-      const form =
-        new FormData();
-
-      form.append(
-        'file',
-        fs.createReadStream(
-          filePath,
-        ),
-      );
-
-      console.log(
-        '📤 VirusTotal ga fayl yuborilmoqda...',
-      );
-
-      const response =
-        await axios.post(
-          uploadUrl,
-          form,
-          {
-            headers: {
-              'x-apikey':
-                this.apiKey,
-
-              ...form.getHeaders(),
-            },
-
-            maxContentLength:
-              Infinity,
-
-            maxBodyLength:
-              Infinity,
-
-            timeout:
-              10 * 60 * 1000,
+      // 32 MB dan katta bo'lsa maxsus upload URL olamiz
+      if (fileSize > MAX_DIRECT_UPLOAD) {
+        console.log('📦 Fayl 32 MB dan katta, maxsus upload URL olinmoqda...');
+        const uploadUrlResponse = await axios.get(`${this.apiUrl}/files/upload_url`, {
+          headers: {
+            'x-apikey': this.apiKey,
           },
-        );
+        });
 
-      // =====================================================
-      // 🆔 ANALYSIS ID
-      // =====================================================
-
-      const analysisId =
-        response.data?.data?.id;
-
-      if (!analysisId) {
-        console.error(
-          '❌ VirusTotal javobi:',
-          response.data,
-        );
-
-        throw new Error(
-          'VirusTotal analysis ID qaytarmadi.',
-        );
+        uploadUrl = uploadUrlResponse.data?.data;
+        if (!uploadUrl) {
+          throw new Error('VirusTotal katta fayl yuklash uchun URL qaytarmadi.');
+        }
       }
 
-      console.log(
-        '✅ VirusTotal analysis ID:',
-        analysisId,
-      );
+      const form = new FormData();
+      form.append('file', fs.createReadStream(filePath));
+
+      const response = await axios.post(uploadUrl, form, {
+        headers: {
+          'x-apikey': this.apiKey,
+          ...form.getHeaders(),
+        },
+        maxContentLength: Infinity,
+        maxBodyLength: Infinity,
+        timeout: 10 * 60 * 1000,
+      });
+
+      const analysisId = response.data?.data?.id;
+      if (!analysisId) {
+        throw new Error('VirusTotal analysis ID qaytarmadi.');
+      }
 
       return analysisId;
-
     } catch (error: any) {
-
-      console.error(
-        '❌ VirusTotal file upload error:',
-        error?.response?.data ||
-        error,
-      );
-
+      console.error('❌ VirusTotal file upload error:', error?.response?.data || error?.message || error);
       throw error;
     }
   }
 
+  /**
+   * Yuborilgan faylning tahlil holatini olish
+   */
   async getAnalysis(analysisId: string): Promise<any> {
     if (!this.apiKey) {
       throw new Error('VIRUSTOTAL_API_KEY .env faylida topilmadi');
     }
 
     try {
-      const response = await axios.get(
-        `${this.apiUrl}/analyses/${analysisId}`,
-        {
-          headers: {
-            'x-apikey': this.apiKey,
-          },
+      const response = await axios.get(`${this.apiUrl}/analyses/${analysisId}`, {
+        headers: {
+          'x-apikey': this.apiKey,
         },
-      );
+      });
 
       return response.data;
-    } catch (error) {
-      console.error('❌ VirusTotal analysis olishda xatolik:', error);
-
+    } catch (error: any) {
+      console.error('❌ VirusTotal analysis olish xatosi:', error?.response?.data || error?.message || error);
       throw error;
     }
   }

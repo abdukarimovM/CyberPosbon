@@ -1,707 +1,478 @@
 import { Markup, Telegraf } from "telegraf";
-
+import dns from "dns/promises";
 import { api } from "../api/api.client";
 import { getUserLanguage } from "../services/user.service";
 
-// URL yuborishini kutayotgan foydalanuvchilar
+type SupportedLang = "uz_lat" | "uz_cyr" | "ru";
+
+function resolveLang(rawLang?: string): SupportedLang {
+  if (rawLang === "ru") return "ru";
+  if (rawLang === "uz_cyr") return "uz_cyr";
+  return "uz_lat";
+}
+
+// Holatlar xotirasi
 const waitingForSource = new Set<string>();
-const deepScanUrls = new Map<string, string>();
-const deepScanResults = new Map<string, any[]>();
+
+interface DeepScanSession {
+  targetUrl: string;
+  resultUrl?: string;
+  scannerResults?: any[];
+  initialScore?: number;
+  initialStatus?: string;
+}
+
+const deepScanSessions = new Map<string, DeepScanSession>();
+
+// =========================================================
+// 🌐 LOKALIZATSIYA VA MATNLAR
+// =========================================================
+
+const I18N = {
+  prompt: {
+    uz_lat: "🔎 Tekshirmoqchi bo‘lgan manba (veb-sayt) havolasini yuboring:",
+    uz_cyr: "🔎 Текширмоқчи бўлган манба (веб-сайт) ҳаволасини юборинг:",
+    ru: "🔎 Отправьте ссылку на источник (веб-сайт), который хотите проверить:",
+  },
+  invalidUrl: {
+    uz_lat: "❌ Yaroqsiz havola!\n\nIltimos, to‘g‘ri manzil yuboring.\nMasalan: `kun.uz` yoki `https://example.com`",
+    uz_cyr: "❌ Яроқсиз ҳавола!\n\nИлтимос, тўғри манзил юборинг.\nМасалан: `kun.uz` ёки `https://example.com`",
+    ru: "❌ Некорректная ссылка!\n\nПожалуйста, укажите правильный адрес.\nНапример: `kun.uz` или `https://example.com`",
+  },
+  domainNotFound: (domain: string) => ({
+    uz_lat: `❌ *Bunday domen mavjud emas!*\n\n🌐 \`${domain}\` nomli veb-sayt DNS tizimida topilmadi.\nIltimos, manzilni to‘g‘ri yozganingizga ishonch hosil qilib qaytadan yuboring.`,
+    uz_cyr: `❌ *Бундай домен мавжуд эмас!*\n\n🌐 \`${domain}\` номли веб-сайт DNS тизимида топилмади.\nИлтимос, манзилни тўғри ёзганингизга ишонч ҳосил қилиб қайтадан юборинг.`,
+    ru: `❌ *Такой домен не существует!*\n\n🌐 Веб-сайт \`${domain}\` не найден в системе DNS.\nПожалуйста, проверьте правильность адреса и отправьте снова.`,
+  }),
+  checking: (domain: string) => ({
+    uz_lat: `🔎 Manba tekshirilmoqda...\n\n🌐 Domen: \`${domain}\``,
+    uz_cyr: `🔎 Манба текширилмоқда...\n\n🌐 Домен: \`${domain}\``,
+    ru: `🔎 Источник проверяется...\n\n🌐 Домен: \`${domain}\``,
+  }),
+  buttons: {
+    deepScan: {
+      uz_lat: "🔬 Chuqur tahlil",
+      uz_cyr: "🔬 Чуқур таҳлил",
+      ru: "🔬 Глубокий анализ",
+    },
+    checkResult: {
+      uz_lat: "🔄 Natijani tekshirish",
+      uz_cyr: "🔄 Натижани текшириш",
+      ru: "🔄 Проверить результат",
+    },
+    mainMenu: {
+      uz_lat: "⬅️ Asosiy menyu",
+      uz_cyr: "⬅️ Асосий меню",
+      ru: "⬅️ Главное меню",
+    },
+  },
+  deepScanStarted: (url: string) => ({
+    uz_lat: `🔬 Chuqur tahlil boshlandi.\n\n🌐 Manzil: ${url}\n\n⏳ Tahlil davom etmoqda. Natijani bir necha soniyadan so‘ng tekshiring.`,
+    uz_cyr: `🔬 Чуқур таҳлил бошланди.\n\n🌐 Манзил: ${url}\n\n⏳ Таҳлил давом этмоқда. Натижани бир неча сониядан сўнг текширинг.`,
+    ru: `🔬 Глубокий анализ запущен.\n\n🌐 Адрес: ${url}\n\n⏳ Анализ выполняется. Проверьте результат через несколько секунд.`,
+  }),
+  deepScanPending: {
+    uz_lat: "⏳ Chuqur tahlil hali yakunlanmadi.\n\n🕐 URLScan tekshiruvni davom ettirmoqda. Iltimos, yana 10–15 soniya kuting.",
+    uz_cyr: "⏳ Чуқур таҳлил ҳали якунланмади.\n\n🕐 URLScan текширувни давом эттирмоқда. Илтимос, яна 10–15 сония кутинг.",
+    ru: "⏳ Глубокий анализ ещё не завершён.\n\n🕐 Сканирование продолжается. Подождите ещё 10–15 секунд.",
+  },
+  deepScanFailed: {
+    uz_lat: "⚠️ *Chuqur tahlilni amalga oshirib bo‘lmadi.*\n\nDomen serveri topilmadi yoki xizmatga ulanish imkoni bo‘lmadi.",
+    uz_cyr: "⚠️ *Чуқур таҳлилни амалга ошириб бўлмади.*\n\nДомен сервери топилмади ёки хизматга уланиш имкони бўлмади.",
+    ru: "⚠️ *Не удалось выполнить глубокий анализ.*\n\nСервер домена не найден или недоступен.",
+  },
+  notFound: {
+    uz_lat: "❌ Chuqur tahlil ma’lumoti topilmadi. Manbani qaytadan tekshiring.",
+    uz_cyr: "❌ Чуқур таҳлил маълумоти топилмади. Манбани қайтадан текширинг.",
+    ru: "❌ Данные глубокого анализа не найдены. Отправьте ссылку заново.",
+  },
+  errors: {
+    general: {
+      uz_lat: "❌ Manbani tekshirish vaqtida xatolik yuz berdi. Qayta urinib ko‘ring.",
+      uz_cyr: "❌ Манбани текшириш вақтида хатолик юз берди. Қайта уриниб кўринг.",
+      ru: "❌ Произошла ошибка при проверке источника. Попробуйте снова.",
+    },
+  },
+};
+
+// =========================================================
+// 🔧 URL FORMATINI TO‘G‘RILASH VA DOMEN TEKSHIRUVI
+// =========================================================
+
+function normalizeAndParseUrl(rawInput: string): { validUrl: string; domain: string } | null {
+  try {
+    let input = rawInput.trim();
+    if (!input.startsWith("http://") && !input.startsWith("https://")) {
+      input = `https://${input}`;
+    }
+
+    const parsed = new URL(input);
+    const domain = parsed.hostname.toLowerCase().replace(/^www\./, "");
+
+    if (!domain || !domain.includes(".") || domain.length < 4) {
+      return null;
+    }
+
+    return { validUrl: parsed.href, domain };
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Domen mavjudligini DNS A/AAAA yozuvlari orqali tekshirish
+ */
+async function isDomainResolvable(domain: string): Promise<boolean> {
+  try {
+    await dns.lookup(domain);
+    return true;
+  } catch (err: any) {
+    if (err.code === "ENOTFOUND" || err.code === "ENODATA") {
+      return false;
+    }
+    return true;
+  }
+}
+
+function getStatusBadge(level: string): string {
+  if (level === "safe") return "🟢 XAVFSIZ / БЕЗОПАСНЫЙ";
+  if (level === "suspicious") return "🟡 SHUBHALI / ПОДОЗРИТЕЛЬНЫЙ";
+  if (level === "dangerous") return "🔴 XAVFLI / ОПАСНЫЙ";
+  return "⚪ NOANIQ / НЕИЗВЕСТНО";
+}
+
+// =========================================================
+// 📱 SOURCE HANDLER
+// =========================================================
 
 export function registerSourceHandler(bot: Telegraf) {
-  // =========================================================
-  // 🔎 MANBANI TEKSHIRISH
-  // =========================================================
 
+  // 1. Havola tekshirish tugmasi bosilganda
   bot.action("check_source", async (ctx) => {
     try {
       await ctx.answerCbQuery();
-
       const telegramId = ctx.from.id.toString();
-
-      // Foydalanuvchi URL yuborishini kutamiz
       waitingForSource.add(telegramId);
 
-      const language = await getUserLanguage(telegramId);
+      const lang = resolveLang(await getUserLanguage(telegramId));
 
-      // 🇷🇺 Русский
-      if (language === "ru") {
-        await ctx.reply(
-          "🔎 Отправьте ссылку на источник, который хотите проверить:",
-          Markup.inlineKeyboard([
-            [Markup.button.callback("⬅️ Главное меню", "main_menu")],
-          ]),
-        );
+      const keyboard = Markup.inlineKeyboard([
+        [Markup.button.callback(I18N.buttons.mainMenu[lang], "main_menu")],
+      ]);
 
+      if (ctx.callbackQuery && "message" in ctx.callbackQuery) {
+        await ctx.editMessageText(I18N.prompt[lang], keyboard);
         return;
       }
 
-      // 🇺🇿 Ўзбек (кирилл)
-      if (language === "uz_cyr") {
-        await ctx.reply(
-          "🔎 Текширмоқчи бўлган манба ҳаволасини юборинг:",
-          Markup.inlineKeyboard([
-            [Markup.button.callback("⬅️ Асосий меню", "main_menu")],
-          ]),
-        );
-
-        return;
-      }
-
-      // 🇺🇿 O‘zbek (lotin)
-      await ctx.reply(
-        "🔎 Tekshirmoqchi bo‘lgan manba havolasini yuboring:",
-        Markup.inlineKeyboard([
-          [Markup.button.callback("⬅️ Asosiy menyu", "main_menu")],
-        ]),
-      );
+      await ctx.reply(I18N.prompt[lang], keyboard);
     } catch (error) {
-      console.error("Source request error:", error);
+      console.error("❌ Source action error:", error);
     }
   });
 
-  // =========================================================
-  // 🌐 FOYDALANUVCHI URL YUBORGANDAGI QISM
-  // =========================================================
-
-  bot.on("text", async (ctx) => {
-    const telegramId = ctx.from.id.toString();
-
-    // Foydalanuvchi hozir manba tekshirayotgan bo‘lmasa,
-    // bu handler ishlamaydi.
-    if (!waitingForSource.has(telegramId)) {
-      return;
+  // 2. Foydalanuvchi havola yuborganda (Tezkor tahlil)
+  bot.on("text", async (ctx, next) => {
+    const telegramId = ctx.from?.id.toString();
+    if (!telegramId || !waitingForSource.has(telegramId)) {
+      return next();
     }
 
     const text = ctx.message.text.trim();
 
-    // =======================================================
-    // ⬅️ ASOSIY MENYUGA QAYTISH
-    // =======================================================
-
-    if (
-      text === "⬅️ Asosiy menyu" ||
-      text === "⬅️ Асосий меню" ||
-      text === "⬅️ Главное меню"
-    ) {
+    if (text.startsWith("/") || text.includes("menyu") || text.includes("меню")) {
       waitingForSource.delete(telegramId);
+      return next();
+    }
 
+    const lang = resolveLang(await getUserLanguage(telegramId));
+    const parsedData = normalizeAndParseUrl(text);
+
+    if (!parsedData) {
+      await ctx.reply(I18N.invalidUrl[lang], {
+        parse_mode: "Markdown",
+        ...Markup.inlineKeyboard([
+          [Markup.button.callback(I18N.buttons.mainMenu[lang], "main_menu")],
+        ]),
+      });
       return;
     }
 
-    try {
-      // =====================================================
-      // 🔗 URL TAYYORLASH
-      // =====================================================
+    const { validUrl, domain } = parsedData;
 
-      let urlText = text;
-
-      // Protocol yozilmagan bo‘lsa, avtomatik qo‘shamiz
-      if (!urlText.startsWith("http://") && !urlText.startsWith("https://")) {
-        urlText = `https://${urlText}`;
-      }
-
-      // URL formatini tekshirish
-      const parsedUrl = new URL(urlText);
-
-      // =====================================================
-      // 🌐 DOMENNI AJRATISH
-      // =====================================================
-
-      const domain = parsedUrl.hostname.toLowerCase().replace(/^www\./, "");
-
-      // Domen noto‘g‘ri bo‘lsa
-      if (!domain || !domain.includes(".")) {
-        await ctx.reply(
-          "❌ Yaroqli manba havolasini yuboring.\n\n" +
-            "Masalan:\n" +
-            "https://example.com",
-        );
-
-        return;
-      }
-
-      // URL qabul qilindi, endi kutish holatini o‘chiramiz
+    // DNS tekshiruvi: mavjud bo'lmagan soxta domenlarni to'xtatish
+    const domainExists = await isDomainResolvable(domain);
+    if (!domainExists) {
       waitingForSource.delete(telegramId);
-
-      const language = await getUserLanguage(telegramId);
-
-      // =====================================================
-      // 🔎 TEKSHIRILMOQDA
-      // =====================================================
-
-      if (language === "ru") {
-        await ctx.reply(
-          `🔎 Источник проверяется...\n\n` + `🌐 Домен: ${domain}`,
-        );
-      } else if (language === "uz_cyr") {
-        await ctx.reply(
-          `🔎 Манба текширилмоқда...\n\n` + `🌐 Домен: ${domain}`,
-        );
-      } else {
-        await ctx.reply(
-          `🔎 Manba tekshirilmoqda...\n\n` + `🌐 Domen: ${domain}`,
-        );
-      }
-
-      // =====================================================
-      // 🔌 BACKEND API
-      // =====================================================
-
-      const response = await api.post("/scanner/check", {
-        url: urlText,
+      await ctx.reply(I18N.domainNotFound(domain)[lang], {
+        parse_mode: "Markdown",
+        ...Markup.inlineKeyboard([
+          [Markup.button.callback(I18N.buttons.mainMenu[lang], "main_menu")],
+        ]),
       });
+      return;
+    }
 
+    waitingForSource.delete(telegramId);
+
+    try {
+      const waitMsg = await ctx.reply(I18N.checking(domain)[lang], { parse_mode: "Markdown" });
+
+      const response = await api.post("/scanner/check", { url: validUrl });
       const result = response.data;
 
       const riskLevel = result?.risk?.level || result?.status || "unknown";
-
       const riskScore = result?.risk?.score ?? 0;
+      const scannerResults = Array.isArray(result?.results) ? result.results : [];
 
-      const scannerResults = Array.isArray(result?.results)
-        ? result.results
-        : [];
+      deepScanSessions.set(telegramId, {
+        targetUrl: validUrl,
+        scannerResults,
+        initialScore: riskScore,
+        initialStatus: riskLevel,
+      });
 
-      // Chuqur tahlil uchun URL va dastlabki natijalarni saqlaymiz
-      deepScanUrls.set(telegramId, urlText);
+      const badge = getStatusBadge(riskLevel);
 
-      deepScanResults.set(telegramId, scannerResults);
+      let message =
+        `🔍 *Manba tekshiruvi natijasi:*\n\n` +
+        `🌐 *Domen:* \`${domain}\`\n` +
+        `🛡️ *Xavf darajasi:* ${badge}\n` +
+        `🎯 *Xavf bali:* ${riskScore}/100\n`;
 
-      // =====================================================
-      // 🔎 TEZKOR TEKSHIRUV NATIJASI
-      // =====================================================
+      const buttons: any[][] = [];
 
-      let message = "";
-
-      if (language === "ru") {
-        message =
-          `🔎 Результат проверки\n\n` +
-          `🌐 Домен: ${domain}\n` +
-          `📊 Риск: ${riskLevel}\n` +
-          `🎯 Балл риска: ${riskScore}\n\n` +
-          `ℹ️ Дополнительный глубокий анализ доступен при необходимости.`;
-      } else if (language === "uz_cyr") {
-        message =
-          `🔎 Текширув натижаси\n\n` +
-          `🌐 Домен: ${domain}\n` +
-          `📊 Хавф даражаси: ${riskLevel}\n` +
-          `🎯 Хавф бали: ${riskScore}\n\n` +
-          `ℹ️ Зарур бўлса, чуқур таҳлилни давом эттириш мумкин.`;
+      // Havola xavfli deb topilsa chuqur tahlil chiqarilmaydi
+      if (riskLevel === "dangerous") {
+        message += `\n⚠️ *Diqqat:* Ushbu manba xavfli deb topildi. Saytga kirish qatʼiyan tavsiya etilmaydi!`;
       } else {
-        message =
-          `🔎 Tekshiruv natijasi\n\n` +
-          `🌐 Domen: ${domain}\n` +
-          `📊 Xavf darajasi: ${riskLevel}\n` +
-          `🎯 Xavf bali: ${riskScore}\n\n` +
-          `ℹ️ Zarur bo‘lsa, chuqur tahlilni davom ettirish mumkin.`;
-      }
-
-      // =====================================================
-      // 🔘 TUGMALAR
-      // =====================================================
-
-      const buttons = [];
-
-      if (riskLevel === "suspicious" || riskLevel === "unknown") {
+        message += `\n_Batafsil tahlil kerak bo‘lsa, quyidagi tugmani bosing._`;
         buttons.push([
-          Markup.button.callback(
-            language === "ru"
-              ? "🔬 Глубокий анализ"
-              : language === "uz_cyr"
-                ? "🔬 Чуқур таҳлил"
-                : "🔬 Chuqur tahlil",
-            "deep_scan",
-          ),
+          Markup.button.callback(I18N.buttons.deepScan[lang], "deep_scan"),
         ]);
       }
 
       buttons.push([
-        Markup.button.callback(
-          language === "ru"
-            ? "⬅️ Главное меню"
-            : language === "uz_cyr"
-              ? "⬅️ Асосий меню"
-              : "⬅️ Asosiy menyu",
-          "main_menu",
-        ),
+        Markup.button.callback(I18N.buttons.mainMenu[lang], "main_menu"),
       ]);
 
-      await ctx.reply(message, Markup.inlineKeyboard(buttons));
+      await ctx.telegram.editMessageText(
+        ctx.chat.id,
+        waitMsg.message_id,
+        undefined,
+        message,
+        {
+          parse_mode: "Markdown",
+          ...Markup.inlineKeyboard(buttons),
+        }
+      );
+
     } catch (error) {
-      console.error("Source URL check error:", error);
-
-      // Xatolik bo‘lsa kutish holatini tozalaymiz
-      waitingForSource.delete(telegramId);
-
-      const language = await getUserLanguage(telegramId);
-
-      if (language === "ru") {
-        await ctx.reply(
-          "❌ При проверке источника произошла ошибка.\n\n" +
-            "Попробуйте ещё раз.",
-        );
-      } else if (language === "uz_cyr") {
-        await ctx.reply(
-          "❌ Манбани текшириш вақтида хатолик юз берди.\n\n" +
-            "Қайта уриниб кўринг.",
-        );
-      } else {
-        await ctx.reply(
-          "❌ Manbani tekshirish vaqtida xatolik yuz berdi.\n\n" +
-            "Qayta urinib ko‘ring.",
-        );
-      }
+      console.error("❌ Source URL check error:", error);
+      await ctx.reply(I18N.errors.general[lang], Markup.inlineKeyboard([
+        [Markup.button.callback(I18N.buttons.mainMenu[lang], "main_menu")],
+      ]));
     }
   });
 
-  // =========================================================
-  // 🔬 CHUQUR TAHLIL
-  // =========================================================
-
+  // 3. Chuqur tahlilni ishga tushirish
   bot.action("deep_scan", async (ctx) => {
     try {
       await ctx.answerCbQuery();
-
       const telegramId = ctx.from.id.toString();
+      const session = deepScanSessions.get(telegramId);
+      const lang = resolveLang(await getUserLanguage(telegramId));
 
-      // Oldingi tekshirilgan URLni olamiz
-      const url = deepScanUrls.get(telegramId);
-
-      if (!url) {
-        await ctx.reply(
-          "❌ Chuqur tahlil uchun URL topilmadi.\n\n" +
-            "Iltimos, manbani qaytadan tekshiring.",
-        );
+      if (!session || !session.targetUrl) {
+        await ctx.reply(I18N.notFound[lang], Markup.inlineKeyboard([
+          [Markup.button.callback(I18N.buttons.mainMenu[lang], "main_menu")],
+        ]));
         return;
       }
 
-      const language = await getUserLanguage(telegramId);
-
-      // =====================================================
-      // ⏳ CHUQUR TAHLIL BOSHLANMOQDA
-      // =====================================================
-
-      if (language === "ru") {
-        await ctx.reply(
-          `🔬 Глубокий анализ запущен.\n\n` +
-            `🌐 URL: ${url}\n\n` +
-            `⏳ Анализ выполняется. Результат будет получен позже.`,
-        );
-      } else if (language === "uz_cyr") {
-        await ctx.reply(
-          `🔬 Чуқур таҳлил бошланди.\n\n` +
-            `🌐 URL: ${url}\n\n` +
-            `⏳ Таҳлил амалга оширилмоқда. Натижа кейинроқ олинади.`,
-        );
-      } else {
-        await ctx.reply(
-          `🔬 Chuqur tahlil boshlandi.\n\n` +
-            `🌐 URL: ${url}\n\n` +
-            `⏳ Tahlil amalga oshirilmoqda. Natija keyinroq olinadi.`,
-        );
-      }
-
-      // =====================================================
-      // 🔌 BACKEND DEEP SCAN
-      // =====================================================
+      const statusMsg = await ctx.reply(I18N.deepScanStarted(session.targetUrl)[lang]);
 
       const response = await api.post("/scanner/deep-scan", {
-        url,
+        url: session.targetUrl,
       });
 
       const result = response.data;
-
-      console.log("🔬 DEEP SCAN RESULT:", result);
-
-      // =====================================================
-      // 🔎 DEEP SCAN MA'LUMOTLARI
-      // =====================================================
-
       const deepScan = result?.deepScan || result?.result?.raw || {};
+      const resultUrl = deepScan?.resultUrl || result?.result?.raw?.resultUrl;
 
-      const pending = deepScan?.pending === true;
+      // Agar URLScan xatolik bilan qaytsa (masalan, HTTP 400)
+      if (!resultUrl && (result?.message?.includes("xatosi") || result?.result?.message?.includes("xatosi"))) {
+        await ctx.telegram.editMessageText(
+          ctx.chat!.id,
+          statusMsg.message_id,
+          undefined,
+          I18N.deepScanFailed[lang],
+          {
+            parse_mode: "Markdown",
+            ...Markup.inlineKeyboard([
+              [Markup.button.callback(I18N.buttons.mainMenu[lang], "main_menu")],
+            ]),
+          }
+        );
+        deepScanSessions.delete(telegramId);
+        return;
+      }
 
-      const resultUrl =
-        deepScan?.resultUrl || result?.result?.raw?.resultUrl || null;
-
-      // URLScan result URLni saqlaymiz
       if (resultUrl) {
-        deepScanUrls.set(telegramId, resultUrl);
+        session.resultUrl = resultUrl;
       }
 
-      // =====================================================
-      // ✅ URLSCAN TAYYOR NATIJA QAYTARDI
-      // =====================================================
+      const readyStatus = result?.status || result?.result?.status;
 
-      const readyStatus = result?.status || result?.result?.status || "unknown";
+      // Agar natija darhol tayyor bo'lsa
+      if (readyStatus && readyStatus !== "unknown" && !deepScan?.pending) {
+        const finalStatus = (session.initialStatus === "dangerous" || readyStatus === "dangerous")
+          ? "dangerous"
+          : (session.initialStatus === "suspicious" || readyStatus === "suspicious")
+            ? "suspicious"
+            : readyStatus;
 
-      if (
-        readyStatus === "safe" ||
-        readyStatus === "suspicious" ||
-        readyStatus === "dangerous"
-      ) {
-        const emoji =
-          readyStatus === "safe"
-            ? "🟢"
-            : readyStatus === "suspicious"
-              ? "🟡"
-              : "🔴";
-
+        const badge = getStatusBadge(finalStatus);
         const readyMessage =
-          language === "ru"
-            ? `🔬 Результат глубокого анализа\n\n` +
-              `${emoji} Статус: ${readyStatus}\n\n` +
-              `${result?.message || result?.result?.message || ""}`
-            : language === "uz_cyr"
-              ? `🔬 Чуқур таҳлил натижаси\n\n` +
-                `${emoji} Ҳолати: ${readyStatus}\n\n` +
-                `${result?.message || result?.result?.message || ""}`
-              : `🔬 Chuqur tahlil natijasi\n\n` +
-                `${emoji} Holati: ${readyStatus}\n\n` +
-                `${result?.message || result?.result?.message || ""}`;
+          `🔬 *Chuqur tahlil natijasi:*\n\n` +
+          `🌐 *Manzil:* ${session.targetUrl}\n` +
+          `🛡️ *Yakuniy holati:* ${badge}\n\n` +
+          `${result?.message || result?.result?.message || ""}`;
 
-        await ctx.reply(
+        await ctx.telegram.editMessageText(
+          ctx.chat!.id,
+          statusMsg.message_id,
+          undefined,
           readyMessage,
-          Markup.inlineKeyboard([
-            [
-              Markup.button.callback(
-                language === "ru"
-                  ? "⬅️ Главное меню"
-                  : language === "uz_cyr"
-                    ? "⬅️ Асосий меню"
-                    : "⬅️ Asosiy menyu",
-                "main_menu",
-              ),
-            ],
-          ]),
+          {
+            parse_mode: "Markdown",
+            ...Markup.inlineKeyboard([
+              [Markup.button.callback(I18N.buttons.mainMenu[lang], "main_menu")],
+            ]),
+          }
         );
-
+        deepScanSessions.delete(telegramId);
         return;
       }
 
-      // =====================================================
-      // ⏳ URLSCAN HALI TAYYOR EMAS
-      // =====================================================
+      // Agar tahlil navbatda davom etayotgan bo'lsa
+      await ctx.telegram.editMessageText(
+        ctx.chat!.id,
+        statusMsg.message_id,
+        undefined,
+        I18N.deepScanPending[lang],
+        Markup.inlineKeyboard([
+          [Markup.button.callback(I18N.buttons.checkResult[lang], "check_deep_scan")],
+          [Markup.button.callback(I18N.buttons.mainMenu[lang], "main_menu")],
+        ])
+      );
 
-      if (pending) {
-        let message = "";
-
-        if (language === "ru") {
-          message =
-            `⏳ Глубокий анализ выполняется.\n\n` +
-            `🔬 URLScan ещё не завершил анализ.\n\n` +
-            `Результат можно проверить позже.`;
-        } else if (language === "uz_cyr") {
-          message =
-            `⏳ Чуқур таҳлил давом этмоқда.\n\n` +
-            `🔬 URLScan ҳали таҳлилни якунламаган.\n\n` +
-            `Натижани кейинроқ текширишингиз мумкин.`;
-        } else {
-          message =
-            `⏳ Chuqur tahlil davom etmoqda.\n\n` +
-            `🔬 URLScan hali tahlilni yakunlamagan.\n\n` +
-            `Natijani keyinroq tekshirishingiz mumkin.`;
-        }
-
-        await ctx.reply(
-          message,
-          Markup.inlineKeyboard([
-            [
-              Markup.button.callback(
-                language === "ru"
-                  ? "🔄 Проверить результат"
-                  : language === "uz_cyr"
-                    ? "🔄 Натижани текшириш"
-                    : "🔄 Natijani tekshirish",
-                "check_deep_scan",
-              ),
-            ],
-            [
-              Markup.button.callback(
-                language === "ru"
-                  ? "⬅️ Главное меню"
-                  : language === "uz_cyr"
-                    ? "⬅️ Асосий меню"
-                    : "⬅️ Asosiy menyu",
-                "main_menu",
-              ),
-            ],
-          ]),
-        );
-
-        return;
-      }
-
-      // =====================================================
-      // ✅ TAYYOR NATIJA
-      // =====================================================
-
-      const finalRisk = result?.finalRisk || result?.result?.raw?.finalRisk;
-
-      if (finalRisk) {
-        const finalStatus = finalRisk.status || "unknown";
-
-        const finalScore = finalRisk.risk?.score ?? 0;
-
-        const finalLevel = finalRisk.risk?.level || finalStatus;
-
-        if (language === "ru") {
-          await ctx.reply(
-            `🔬 Результат глубокого анализа\n\n` +
-              `🌐 URL: ${url}\n` +
-              `📊 Статус: ${finalStatus}\n` +
-              `⚠️ Уровень риска: ${finalLevel}\n` +
-              `🎯 Балл риска: ${finalScore}`,
-          );
-        } else if (language === "uz_cyr") {
-          await ctx.reply(
-            `🔬 Чуқур таҳлил натижаси\n\n` +
-              `🌐 URL: ${url}\n` +
-              `📊 Ҳолати: ${finalStatus}\n` +
-              `⚠️ Хавф даражаси: ${finalLevel}\n` +
-              `🎯 Хавф бали: ${finalScore}`,
-          );
-        } else {
-          await ctx.reply(
-            `🔬 Chuqur tahlil natijasi\n\n` +
-              `🌐 URL: ${url}\n` +
-              `📊 Holati: ${finalStatus}\n` +
-              `⚠️ Xavf darajasi: ${finalLevel}\n` +
-              `🎯 Xavf bali: ${finalScore}`,
-          );
-        }
-
-        return;
-      }
-
-      // =====================================================
-      // ⚪ KUTILMAGAN HOLAT
-      // =====================================================
-
-      if (language === "ru") {
-        await ctx.reply(
-          "⚠️ Глубокий анализ запущен, но результат пока не готов.",
-        );
-      } else if (language === "uz_cyr") {
-        await ctx.reply(
-          "⚠️ Чуқур таҳлил бошланди, лекин натижа ҳали тайёр эмас.",
-        );
-      } else {
-        await ctx.reply(
-          "⚠️ Chuqur tahlil boshlandi, lekin natija hali tayyor emas.",
-        );
-      }
     } catch (error) {
-      console.error("Deep scan handler error:", error);
-
-      const language = await getUserLanguage(ctx.from.id.toString());
-
-      if (language === "ru") {
-        await ctx.reply(
-          "❌ При выполнении глубокого анализа произошла ошибка.",
-        );
-      } else if (language === "uz_cyr") {
-        await ctx.reply("❌ Чуқур таҳлил вақтида хатолик юз берди.");
-      } else {
-        await ctx.reply("❌ Chuqur tahlil vaqtida xatolik yuz berdi.");
-      }
+      console.error("❌ Deep scan handler error:", error);
+      const lang = resolveLang(await getUserLanguage(ctx.from.id.toString()));
+      await ctx.reply(I18N.errors.general[lang], Markup.inlineKeyboard([
+        [Markup.button.callback(I18N.buttons.mainMenu[lang], "main_menu")],
+      ]));
     }
   });
 
-  // =========================================================
-  // 🔄 CHUQUR TAHLIL NATIJASINI TEKSHIRISH
-  // =========================================================
-
+  // 4. Chuqur tahlil natijasini tekshirish (Polling)
   bot.action("check_deep_scan", async (ctx) => {
     try {
       await ctx.answerCbQuery();
-
       const telegramId = ctx.from.id.toString();
+      const session = deepScanSessions.get(telegramId);
+      const lang = resolveLang(await getUserLanguage(telegramId));
 
-      // =====================================================
-      // 🔗 OLDINGI DEEP SCAN URL
-      // =====================================================
-
-      const resultUrl = deepScanUrls.get(telegramId);
-
-      if (!resultUrl) {
-        await ctx.reply(
-          "❌ Chuqur tahlil natijasi topilmadi.\n\n" +
-            "Iltimos, manbani qaytadan tekshiring.",
-        );
+      if (!session || !session.resultUrl) {
+        await ctx.reply(I18N.notFound[lang], Markup.inlineKeyboard([
+          [Markup.button.callback(I18N.buttons.mainMenu[lang], "main_menu")],
+        ]));
         return;
       }
 
-      const language = await getUserLanguage(telegramId);
-
-      // =====================================================
-      // 📦 OLDINGI TEZKOR SCANNER NATIJALARI
-      // =====================================================
-
-      const scannerResults = deepScanResults.get(telegramId) || [];
-
-      // =====================================================
-      // 🔄 BACKENDDAN DEEP SCAN NATIJASINI OLAMIZ
-      // =====================================================
+      const chatId = ctx.chat?.id;
+      const messageId =
+        "message" in ctx.callbackQuery && ctx.callbackQuery.message
+          ? ctx.callbackQuery.message.message_id
+          : undefined;
 
       const response = await api.post("/scanner/deep-scan/status", {
-        resultUrl,
-        results: scannerResults,
+        resultUrl: session.resultUrl,
+        results: session.scannerResults || [],
       });
 
       const data = response.data;
-
-      console.log("🔬 DEEP SCAN STATUS:", data);
-
       const result = data?.result;
+      const raw = result?.raw && typeof result.raw === "object" ? result.raw : {};
 
-      // =====================================================
-      // ⏳ URLSCAN HALI TUGAMAGAN
-      // =====================================================
-
-      const raw =
-        result?.raw && typeof result.raw === "object" ? result.raw : {};
-
-      const pending = raw?.pending === true;
-
-      if (pending) {
-        const message =
-          language === "ru"
-            ? "⏳ Глубокий анализ ещё выполняется.\n\n🔬 URLScan ещё не завершил анализ.\n\nПопробуйте проверить результат позже."
-            : language === "uz_cyr"
-              ? "⏳ Чуқур таҳлил ҳали давом этмоқда.\n\n🔬 URLScan ҳали таҳлилни якунламаган.\n\nНатижани кейинроқ текширинг."
-              : "⏳ Chuqur tahlil hali davom etmoqda.\n\n🔬 URLScan hali tahlilni yakunlamagan.\n\nNatijani keyinroq tekshiring.";
-
-        await ctx.reply(
-          message,
-          Markup.inlineKeyboard([
-            [
-              Markup.button.callback(
-                language === "ru"
-                  ? "🔄 Проверить результат"
-                  : language === "uz_cyr"
-                    ? "🔄 Натижани текшириш"
-                    : "🔄 Natijani tekshirish",
-                "check_deep_scan",
-              ),
-            ],
-            [
-              Markup.button.callback(
-                language === "ru"
-                  ? "⬅️ Главное меню"
-                  : language === "uz_cyr"
-                    ? "⬅️ Асосий меню"
-                    : "⬅️ Asosiy menyu",
-                "main_menu",
-              ),
-            ],
-          ]),
-        );
-
+      // Hali tahlil yakunlanmagan bo'lsa
+      if (raw?.pending === true) {
+        if (chatId && messageId) {
+          await ctx.telegram.editMessageText(
+            chatId,
+            messageId,
+            undefined,
+            I18N.deepScanPending[lang],
+            Markup.inlineKeyboard([
+              [Markup.button.callback(I18N.buttons.checkResult[lang], "check_deep_scan")],
+              [Markup.button.callback(I18N.buttons.mainMenu[lang], "main_menu")],
+            ])
+          );
+        }
         return;
       }
 
-      // =====================================================
-      // ✅ NATIJA TAYYOR
-      // =====================================================
+      // Tahlillarni birlashtirish
+      const deepStatus = result?.status || "unknown";
 
-      const finalRisk = data?.finalRisk || result?.finalRisk;
-
-      const finalStatus = finalRisk?.status || result?.status || "unknown";
-
-      const finalScore = finalRisk?.risk?.score ?? result?.risk?.score ?? 0;
-
-      const finalLevel =
-        finalRisk?.risk?.level || result?.risk?.level || finalStatus;
-
-      // =====================================================
-      // 🎨 STATUS EMOJI
-      // =====================================================
-
-      let emoji = "⚪";
-
-      if (finalLevel === "safe") {
-        emoji = "🟢";
-      } else if (finalLevel === "suspicious") {
-        emoji = "🟡";
-      } else if (finalLevel === "dangerous") {
-        emoji = "🔴";
+      let finalStatus = deepStatus;
+      if (session.initialStatus === "dangerous" || deepStatus === "dangerous") {
+        finalStatus = "dangerous";
+      } else if (session.initialStatus === "suspicious" || deepStatus === "suspicious") {
+        finalStatus = "suspicious";
       }
 
-      // =====================================================
-      // 📝 NATIJA XABARI
-      // =====================================================
+      const finalScore = Math.max(session.initialScore || 0, data?.finalRisk?.risk?.score ?? 0);
+      const badge = getStatusBadge(finalStatus);
 
-      let message = "";
+      const message =
+        `🔬 *Chuqur tahlil natijasi:*\n\n` +
+        `🌐 *Manzil:* ${session.targetUrl}\n` +
+        `🛡️ *Yakuniy xavf darajasi:* ${badge}\n` +
+        `🎯 *Xavf bali:* ${finalScore}/100\n\n` +
+        `${result?.message || ""}`;
 
-      if (language === "ru") {
-        message =
-          `🔬 Результат глубокого анализа\n\n` +
-          `🌐 URL: ${resultUrl}\n\n` +
-          `${emoji} Статус: ${finalStatus}\n` +
-          `⚠️ Уровень риска: ${finalLevel}\n` +
-          `🎯 Балл риска: ${finalScore}\n\n` +
-          `${result?.message || ""}`;
-      } else if (language === "uz_cyr") {
-        message =
-          `🔬 Чуқур таҳлил натижаси\n\n` +
-          `🌐 URL: ${resultUrl}\n\n` +
-          `${emoji} Ҳолати: ${finalStatus}\n` +
-          `⚠️ Хавф даражаси: ${finalLevel}\n` +
-          `🎯 Хавф бали: ${finalScore}\n\n` +
-          `${result?.message || ""}`;
+      if (chatId && messageId) {
+        await ctx.telegram.editMessageText(
+          chatId,
+          messageId,
+          undefined,
+          message,
+          {
+            parse_mode: "Markdown",
+            ...Markup.inlineKeyboard([
+              [Markup.button.callback(I18N.buttons.mainMenu[lang], "main_menu")],
+            ]),
+          }
+        );
       } else {
-        message =
-          `🔬 Chuqur tahlil natijasi\n\n` +
-          `🌐 URL: ${resultUrl}\n\n` +
-          `${emoji} Holati: ${finalStatus}\n` +
-          `⚠️ Xavf darajasi: ${finalLevel}\n` +
-          `🎯 Xavf bali: ${finalScore}\n\n` +
-          `${result?.message || ""}`;
+        await ctx.reply(message, {
+          parse_mode: "Markdown",
+          ...Markup.inlineKeyboard([
+            [Markup.button.callback(I18N.buttons.mainMenu[lang], "main_menu")],
+          ]),
+        });
       }
 
-      // =====================================================
-      // 📤 FOYDALANUVCHIGA YAKUNIY NATIJA
-      // =====================================================
+      deepScanSessions.delete(telegramId);
 
-      await ctx.reply(
-        message,
-        Markup.inlineKeyboard([
-          [
-            Markup.button.callback(
-              language === "ru"
-                ? "⬅️ Главное меню"
-                : language === "uz_cyr"
-                  ? "⬅️ Асосий меню"
-                  : "⬅️ Asosiy menyu",
-              "main_menu",
-            ),
-          ],
-        ]),
-      );
-
-      // =====================================================
-      // 🧹 NATIJA TAYYOR BO'LGACH TOZALAYMIZ
-      // =====================================================
-
-      deepScanUrls.delete(telegramId);
-      deepScanResults.delete(telegramId);
     } catch (error) {
       console.error("❌ Check deep scan error:", error);
-
-      const language = await getUserLanguage(ctx.from.id.toString());
-
-      if (language === "ru") {
-        await ctx.reply(
-          "❌ При получении результата глубокого анализа произошла ошибка.",
-        );
-      } else if (language === "uz_cyr") {
-        await ctx.reply("❌ Чуқур таҳлил натижасини олишда хатолик юз берди.");
-      } else {
-        await ctx.reply(
-          "❌ Chuqur tahlil natijasini olishda xatolik yuz berdi.",
-        );
-      }
+      const lang = resolveLang(await getUserLanguage(ctx.from.id.toString()));
+      await ctx.reply(I18N.errors.general[lang], Markup.inlineKeyboard([
+        [Markup.button.callback(I18N.buttons.mainMenu[lang], "main_menu")],
+      ]));
     }
   });
 }
