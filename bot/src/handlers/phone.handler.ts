@@ -26,14 +26,31 @@ const I18N = {
         ru: '📱 Введите номер телефона, который хотите проверить:\n\nНапример: `+998901234567` или `901234567`',
     },
     invalid: {
-        uz_lat: '❌ Yaroqsiz telefon raqami format!\nIltimos, qaytadan to‘g‘ri formatda kiriting.',
-        uz_cyr: '❌ Яроқсиз телефон рақами формат!\nИлтимос, қайтадан тўғри форматда киритинг.',
+        uz_lat: '❌ Yaroqsiz telefon raqami formati!\nIltimos, qaytadan to‘g‘ri formatda kiriting.',
+        uz_cyr: '❌ Яроқсиз телефон рақами формати!\nИлтимос, қайтадан тўғри форматда киритинг.',
         ru: '❌ Неверный формат номера телефона!\nПожалуйста, введите корректный номер.',
     },
     reportPrompt: {
         uz_lat: '🚨 Qaysi turdagi firibgarlik holati bo‘yicha shikoyat qoldirmoqchisiz?',
         uz_cyr: '🚨 Қайси турдаги фирибгарлик ҳолати бўйича шикоят қолдирмоқчисиз?',
         ru: '🚨 По какой категории мошенничества вы хотите пожаловаться?',
+    },
+    lineType: {
+        voip: {
+            uz_lat: '🌐 Virtual (VoIP / Internet raqam)',
+            uz_cyr: '🌐 Виртуал (VoIP / Интернет рақам)',
+            ru: '🌐 Виртуальный (VoIP)',
+        },
+        regular: {
+            uz_lat: '📱 Mobil / SIM-karta',
+            uz_cyr: '📱 Мобил / SIM-карта',
+            ru: '📱 Мобильный / SIM-карта',
+        },
+    },
+    osintAlert: {
+        uz_lat: '🌐 *Web OSINT:* Ochiq internet manbalarida shubhali izlar topildi ⚠️\n',
+        uz_cyr: '🌐 *Web OSINT:* Очиқ интернет манбаларида шубҳали излар топилди ⚠️\n',
+        ru: '🌐 *Web OSINT:* Найдены подозрительные следы в открытых источниках ⚠️\n',
     },
     buttons: {
         mainMenu: { uz_lat: '⬅️ Asosiy menyu', uz_cyr: '⬅️ Асосий меню', ru: '⬅️ Главное меню' },
@@ -90,20 +107,31 @@ export function registerPhoneHandler(bot: Telegraf) {
             const data = response.data;
             waitingForPhone.delete(telegramId);
 
-            // Sessiyaga yozib qo'yamiz (agar foydalanuvchi shikoyat qilmoqchi bo'lsa)
             reportingSessions.set(telegramId, { phoneNumber: data.phoneNumber });
 
             let badge = '🟢 XAVFSIZ / БЕЗОПАСНЫЙ';
             if (data.riskLevel === 'dangerous') badge = '🔴 XAVFLI (FIRIBGARLIK GUMONI)';
             else if (data.riskLevel === 'suspicious') badge = '🟡 SHUBHALI';
 
+            const lineTypeLabel = data.isVoip
+                ? I18N.lineType.voip[lang]
+                : I18N.lineType.regular[lang];
+
             let message =
                 `📱 *Telefon raqami tekshiruvi:*\n\n` +
                 `📞 *Raqam:* \`${data.phoneNumber}\`\n` +
                 `🏢 *Operator:* ${data.operator || 'Nomaʼlum'}\n` +
+                `📶 *Raqam turi:* ${lineTypeLabel}\n` +
                 `🛡️ *Xavf darajasi:* ${badge}\n` +
-                `📊 *Qayd etilgan shikoyatlar:* ${data.reportsCount} ta\n\n` +
-                `ℹ️ _${data.message}_`;
+                `🎯 *Xavf bali:* ${data.riskScore ?? 0}/100\n` +
+                `📊 *Qayd etilgan shikoyatlar:* ${data.reportsCount} ta\n`;
+
+            // Agar ochiq internet manbalarida izlar topilgan bo'lsa
+            if (data.osintFound) {
+                message += I18N.osintAlert[lang];
+            }
+
+            message += `\nℹ️ _${data.message}_`;
 
             const buttons = [
                 [Markup.button.callback(I18N.buttons.report[lang], 'report_phone')],

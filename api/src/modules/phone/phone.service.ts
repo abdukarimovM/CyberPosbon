@@ -1,11 +1,11 @@
-import { Injectable, Logger, BadRequestException } from '@nestjs/common';
-import { PhoneNumberUtil, PhoneNumberFormat } from 'google-libphonenumber';
+import { Injectable, BadRequestException } from '@nestjs/common';
+import { PhoneNumberUtil, PhoneNumberFormat, PhoneNumberType } from 'google-libphonenumber';
 import { PrismaService } from '../../prisma/prisma.service';
 import { FraudCategory } from '@prisma/client';
+import { PhoneOsintService } from './phone-osint.service';
 
 const phoneUtil = PhoneNumberUtil.getInstance();
 
-// O'zbekiston prefikslari bo'yicha operatorlar xaritasi
 const UZ_OPERATOR_PREFIXES: Record<string, string> = {
     '90': 'Beeline',
     '91': 'Beeline',
@@ -24,18 +24,20 @@ const UZ_OPERATOR_PREFIXES: Record<string, string> = {
 
 @Injectable()
 export class PhoneService {
-    private readonly logger = new Logger(PhoneService.name);
-
-    constructor(private readonly prisma: PrismaService) { }
+    constructor(
+        private readonly prisma: PrismaService,
+        private readonly osintService: PhoneOsintService,
+    ) { }
 
     /**
-     * Raqamni tekshirish va xalqaro E.164 formatiga keltirish (+998XXXXXXXXX)
+     * Raqamni tekshirish va xalqaro E.164 formatiga keltirish
      */
     normalizePhoneNumber(rawNumber: string, defaultCountry: string = 'UZ'): {
         formattedNumber: string;
         countryCode: string;
         isValid: boolean;
         operator?: string;
+        isVoipLocal?: boolean;
     } {
         try {
             let cleaned = rawNumber.trim().replace(/[\s\-\(\)]/g, '');
@@ -49,6 +51,7 @@ export class PhoneService {
             const isValid = phoneUtil.isValidNumber(parsed);
             const formattedNumber = phoneUtil.format(parsed, PhoneNumberFormat.E164);
             const countryCode = phoneUtil.getRegionCodeForNumber(parsed) || defaultCountry;
+            const numberType = phoneUtil.getNumberType(parsed);
 
             let operator = 'Nomaʼlum operator';
             if (countryCode === 'UZ' && formattedNumber.length === 13) {
@@ -56,11 +59,14 @@ export class PhoneService {
                 operator = UZ_OPERATOR_PREFIXES[prefix] || 'Mahalliy provayder';
             }
 
+            const isVoipLocal = numberType === PhoneNumberType.VOIP;
+
             return {
                 formattedNumber,
                 countryCode,
                 isValid,
                 operator,
+                isVoipLocal,
             };
         } catch (err) {
             return {
@@ -72,7 +78,7 @@ export class PhoneService {
     }
 
     /**
-     * Telefon raqamini bazadan tekshirish va xavf darajasini hisoblash
+     * Telefon raqamini bazadan, VoIP va Web OSINT modullaridan tekshirish
      */
     async checkNumber(rawNumber: string) {
         const meta = this.normalizePhoneNumber(rawNumber);
@@ -80,75 +86,81 @@ export class PhoneService {
             throw new BadRequestException('Kiritilgan telefon raqami yaroqsiz formatda.');
         }
 
+        // 1. Bazadagi shikoyatlarni olish
         const record = await this.prisma.fraudNumber.findUnique({
             where: { phoneNumber: meta.formattedNumber },
             include: {
                 reports: {
-                    select: {
-                        category: true,
-                        createdAt: true,
-                    },
+                    select: { category: true, createdAt: true },
                     orderBy: { createdAt: 'desc' },
                     take: 5,
                 },
             },
         });
 
-        if (!record) {
-            return {
-                phoneNumber: meta.formattedNumber,
-                countryCode: meta.countryCode,
-                operator: meta.operator,
-                isReported: false,
-                reportsCount: 0,
-                riskScore: 0,
-                riskLevel: 'safe' as const,
-                categories: [],
-                message: 'Ushbu raqam bo‘yicha tizimda firibgarlik shikoyatlari mavjud emas.',
-            };
+        // 2. VoIP va liniya turini aniqlash (Mahalliy libphonenumber orqali)
+        const isVoip = Boolean(meta.isVoipLocal);
+        const lineType = isVoip ? 'VoIP / Virtual raqam' : 'Mobil / SIM-karta';
+
+        // 3. Web OSINT tekshiruvi (Ochiq internet manbalari bo'yicha firibgarlik izlari)
+        const osint = await this.osintService.searchFraudTraces(meta.formattedNumber);
+
+        // 4. Xavf balini hisoblash
+        let riskScore = 0;
+        const reportsCount = record?.reportsCount || 0;
+
+        if (record?.isVerified) {
+            riskScore = 100;
+        } else {
+            riskScore = Math.min(50, reportsCount * 15);
+            if (isVoip) {
+                riskScore = Math.min(100, riskScore + 30);
+            }
+            if (osint.found) {
+                riskScore = Math.min(100, riskScore + 35);
+            }
         }
 
-        // Xavf toifalarini guruhlash
-        const categoryCounts: Record<string, number> = {};
-        for (const r of record.reports) {
-            categoryCounts[r.category] = (categoryCounts[r.category] || 0) + 1;
-        }
-
-        // 🛡️ Soxta shikoyatlardan himoyalangan xavf baholash
+        // 5. Xavf darajasini belgilash
         let riskLevel: 'safe' | 'suspicious' | 'dangerous' = 'safe';
         let message = 'Ushbu raqam bo‘yicha tizimda firibgarlik shikoyatlari mavjud emas.';
 
-        if (record.isVerified) {
+        if (record?.isVerified || riskScore >= 70) {
             riskLevel = 'dangerous';
-            message = '🚨 Diqqat! Ushbu raqam vakolatli organlar yoki tizim administratori tomonidan tasdiqlangan xavfli firibgar raqam hisoblanadi.';
-        } else if (record.reportsCount >= 5) {
-            riskLevel = 'dangerous';
-            message = '🔴 Diqqat! Ushbu raqam ustidan ko‘plab mustaqil foydalanuvchilardan firibgarlik shikoyatlari qayd etilgan.';
-        } else if (record.reportsCount >= 3) {
+            message = '🚨 Diqqat! Ushbu raqam yuqori xavfli firibgar raqam deb topildi.';
+        } else if (riskScore >= 35 || reportsCount >= 3 || isVoip || osint.found) {
             riskLevel = 'suspicious';
-            message = '🟡 Ogohlantirish! Ushbu raqam ustidan bir nechta shubhali holatlar bo‘yicha shikoyat tushgan. Ehtiyot bo‘ling.';
-        } else if (record.reportsCount > 0) {
+            if (osint.found) {
+                message = `⚠️ Internetdagi ochiq manbalarda ushbu raqam shubhali to‘lovlar yoki firibgarlik bilan bog‘liq holda tilga olingan.`;
+            } else if (isVoip) {
+                message = '⚠️ Ogohlantirish! Bu internet orqali olingan virtual (VoIP) raqam. Anonim firibgarlar bunday raqamlardan tez-tez foydalanadi.';
+            } else {
+                message = '🟡 Ushbu raqam ustidan shubhali holatlar bo‘yicha shikoyatlar mavjud.';
+            }
+        } else if (reportsCount > 0) {
             riskLevel = 'safe';
-            message = `ℹ️ Ushbu raqam bo‘yicha ${record.reportsCount} ta tekshirilmagan shikoyat mavjud, ammo bu raqamni to‘liq xavfli deb hisoblash uchun yetarli emas.`;
+            message = `ℹ️ Ushbu raqam bo‘yicha ${reportsCount} ta tekshirilmagan shikoyat mavjud, ammo to‘liq xavfli deb hisoblash uchun yetarli emas.`;
         }
 
         return {
-            phoneNumber: record.phoneNumber,
-            countryCode: record.countryCode || meta.countryCode,
-            operator: record.operator || meta.operator,
-            isReported: true,
-            reportsCount: record.reportsCount,
-            riskScore: record.riskScore,
+            phoneNumber: meta.formattedNumber,
+            countryCode: meta.countryCode,
+            operator: meta.operator,
+            lineType,
+            isVoip,
+            isReported: reportsCount > 0,
+            reportsCount,
+            riskScore,
             riskLevel,
-            isVerified: record.isVerified,
-            categories: Object.keys(categoryCounts),
-            lastReports: record.reports,
+            isVerified: record?.isVerified || false,
+            osintFound: osint.found,
+            osintSources: osint.sources,
             message,
         };
     }
 
     /**
-     * Foydalanuvchi tomonidan raqam ustidan shikoyat qoldirish
+     * Foydalanuvchi tomonidan shikoyat qoldirish
      */
     async reportNumber(dto: {
         phoneNumber: string;
@@ -161,7 +173,6 @@ export class PhoneService {
             throw new BadRequestException('Kiritilgan telefon raqami yaroqsiz.');
         }
 
-        // Bazada raqam borligini tekshirish yoki yaratish
         let fraudNumber = await this.prisma.fraudNumber.findUnique({
             where: { phoneNumber: meta.formattedNumber },
         });
@@ -178,7 +189,6 @@ export class PhoneService {
             });
         }
 
-        // Bir xil foydalanuvchi qayta shikoyat qilganini tekshirish
         const existingReport = await this.prisma.numberReport.findUnique({
             where: {
                 phoneNumberId_reportedBy: {
@@ -196,7 +206,6 @@ export class PhoneService {
             };
         }
 
-        // Shikoyatni yozish
         await this.prisma.numberReport.create({
             data: {
                 phoneNumberId: fraudNumber.id,
@@ -206,7 +215,6 @@ export class PhoneService {
             },
         });
 
-        // Raqam statistikasini oshirish (Har bir shikoyat 15 ball, tasdiqlangan bo'lsa 100)
         const updatedCount = fraudNumber.reportsCount + 1;
         const newScore = fraudNumber.isVerified ? 100 : Math.min(100, updatedCount * 15);
 
