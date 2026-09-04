@@ -1,13 +1,12 @@
 import { Module } from '@nestjs/common';
-import { PhoneService } from './phone.service';
 import { PhoneController } from './phone.controller';
+import { PhoneService } from './phone.service';
 import { PhoneOsintService } from './phone-osint.service';
-import { PrismaModule } from '../../prisma/prisma.module';
+import { PhoneExportService } from './phone-export.service';
 
 @Module({
-    imports: [PrismaModule],
     controllers: [PhoneController],
-    providers: [PhoneService, PhoneOsintService],
-    exports: [PhoneService],
+    providers: [PhoneService, PhoneOsintService, PhoneExportService],
+    exports: [PhoneService, PhoneExportService],
 })
 export class PhoneModule { }

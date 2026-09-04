@@ -4,6 +4,7 @@ import { ScannerResult } from './interfaces/scanner-result.interface';
 import { VirusTotalFileScanner } from './providers/virustotal-file.scanner';
 import { RiskEngineService } from './risk/risk-engine.service';
 import { AiService } from '../ai/ai.service';
+import { PrismaService } from '../../prisma/prisma.service';
 
 @Injectable()
 export class ScannerService {
@@ -14,7 +15,58 @@ export class ScannerService {
     private readonly urlscanScanner: UrlscanScanner,
     private readonly virusTotalFileScanner: VirusTotalFileScanner,
     private readonly aiService: AiService,
+    private readonly prisma: PrismaService,
   ) { }
+
+  /**
+   * Faqat xavfli yoki shubhali havolalarni Source jadvaliga yozish
+   */
+  private async saveMaliciousSourceIfThreat(
+    targetUrl: string,
+    level: 'safe' | 'suspicious' | 'dangerous' | 'unknown',
+    score: number,
+    detections: string[] = [],
+  ): Promise<void> {
+    if (level !== 'dangerous' && level !== 'suspicious') {
+      return;
+    }
+
+    try {
+      let domain = targetUrl;
+      try {
+        const parsed = new URL(
+          targetUrl.startsWith('http') ? targetUrl : `http://${targetUrl}`
+        );
+        domain = parsed.hostname;
+      } catch {
+        // Agar URL parse bo'lmasa, o'zini saqlaymiz
+      }
+
+      const threatDescription = detections.length > 0
+        ? detections.slice(0, 2).join('; ')
+        : (level === 'dangerous' ? 'Zararli fishing yoki scam havola' : 'Shubhali havola');
+
+      await this.prisma.source.upsert({
+        where: { domain },
+        update: {
+          url: targetUrl,
+          status: level === 'dangerous' ? 'malicious' : 'suspicious',
+          reason: `${threatDescription} (Xavf: ${score}%)`,
+          updatedAt: new Date(),
+        },
+        create: {
+          domain,
+          url: targetUrl,
+          status: level === 'dangerous' ? 'malicious' : 'suspicious',
+          reason: `${threatDescription} (Xavf: ${score}%)`,
+        },
+      });
+
+      this.logger.log(`🛡 Xavfli havola ma'lumotlar bazasiga yozildi: ${domain}`);
+    } catch (error) {
+      this.logger.error('❌ Xavfli havolani bazaga saqlashda xatolik:', error);
+    }
+  }
 
   /**
    * Bir nechta URL scanner natijalarini parallel yig‘adi.
@@ -56,6 +108,9 @@ export class ScannerService {
     const detections = results
       .filter((r) => r.status === 'dangerous' || r.status === 'suspicious')
       .map((r) => `${r.provider}: ${r.message}`);
+
+    // Xavfli bo'lsa darhol bazaga yozamiz
+    await this.saveMaliciousSourceIfThreat(url, level, score, detections);
 
     let aiSummary = '';
     try {
@@ -133,6 +188,11 @@ export class ScannerService {
     const detections = allResults
       .filter((r) => r.status === 'dangerous' || r.status === 'suspicious')
       .map((r) => `${r.provider}: ${r.message}`);
+
+    // Chuqur tahlil natijasida xavfli deb topilsa ham bazaga saqlaymiz
+    if (targetUrl) {
+      await this.saveMaliciousSourceIfThreat(targetUrl, level, score, detections);
+    }
 
     let aiSummary = '';
     try {

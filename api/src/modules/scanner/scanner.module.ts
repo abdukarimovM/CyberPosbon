@@ -17,11 +17,13 @@ import { FileHashService } from './file/file-hash.service';
 // Risk Engine
 import { RiskEngineService } from './risk/risk-engine.service';
 
-import { AiModule } from '../ai/ai.module'; // <-- Yangi qo'shildi
+import { AiModule } from '../ai/ai.module';
+import { PrismaModule } from '../../prisma/prisma.module'; // <-- Prisma moduli ulandi
 
 @Module({
   imports: [
     AiModule,
+    PrismaModule, // <-- Bazaga saqlash uchun qo'shildi
     // Multer fayllarni vaqtinchalik saqlash sozlamasi
     MulterModule.register({
       dest: './uploads',

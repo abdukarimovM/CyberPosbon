@@ -1,4 +1,4 @@
-import { Injectable, BadRequestException } from '@nestjs/common';
+import { Injectable, BadRequestException, NotFoundException } from '@nestjs/common';
 import { PhoneNumberUtil, PhoneNumberFormat, PhoneNumberType } from 'google-libphonenumber';
 import { PrismaService } from '../../prisma/prisma.service';
 import { FraudCategory } from '@prisma/client';
@@ -91,7 +91,7 @@ export class PhoneService {
             where: { phoneNumber: meta.formattedNumber },
             include: {
                 reports: {
-                    select: { category: true, createdAt: true },
+                    select: { category: true, comment: true, createdAt: true },
                     orderBy: { createdAt: 'desc' },
                     take: 5,
                 },
@@ -230,6 +230,114 @@ export class PhoneService {
             success: true,
             alreadyReported: false,
             message: 'Shikoyat muvaffaqiyatli qabul qilindi. Jamiyat xavfsizligiga hissa qo‘shganingiz uchun rahmat!',
+        };
+    }
+
+    /**
+     * Moderator uchun: Faqat tasdiqlanmagan (kutilayotgan) shikoyatlarni olish
+     */
+    async getPendingReports(limit = 10) {
+        // 1. So'nggi shikoyatlarni olish (zaxirasi bilan)
+        const reports = await this.prisma.numberReport.findMany({
+            take: limit * 2,
+            orderBy: { createdAt: 'desc' },
+        });
+
+        // 2. Tegishli raqamlarni biriktirish
+        const enrichedReports = await Promise.all(
+            reports.map(async (report) => {
+                const fraudRecord = await this.prisma.fraudNumber.findUnique({
+                    where: { id: report.phoneNumberId },
+                    select: {
+                        phoneNumber: true,
+                        operator: true,
+                        riskScore: true,
+                        reportsCount: true,
+                        isVerified: true,
+                    },
+                });
+                return {
+                    ...report,
+                    fraudNumber: fraudRecord,
+                };
+            })
+        );
+
+        // 3. Faqat hali tasdiqlanmagan (isVerified !== true) raqamlarni qoldirish
+        return enrichedReports
+            .filter((item) => !item.fraudNumber?.isVerified)
+            .slice(0, limit);
+    }
+    /**
+     * Moderator uchun: Raqamni rasman tasdiqlash (Qora ro'yxat)
+     */
+    async verifyFraudNumber(phoneNumber: string) {
+        const meta = this.normalizePhoneNumber(phoneNumber);
+        if (!meta.isValid) {
+            throw new BadRequestException('Telefon raqami yaroqsiz formatda.');
+        }
+
+        const record = await this.prisma.fraudNumber.upsert({
+            where: { phoneNumber: meta.formattedNumber },
+            update: {
+                isVerified: true,
+                riskScore: 100,
+            },
+            create: {
+                phoneNumber: meta.formattedNumber,
+                countryCode: meta.countryCode,
+                operator: meta.operator,
+                reportsCount: 1,
+                riskScore: 100,
+                isVerified: true,
+            },
+        });
+
+        return {
+            success: true,
+            message: 'Raqam muvaffaqiyatli rasmiy qora ro‘yxatga olindi.',
+            record,
+        };
+    }
+
+    /**
+     * Moderator uchun: Soxta/noto'g'ri shikoyatni o'chirish va statistikani qayta hisoblash
+     */
+    async dismissReport(reportId: string) {
+        const report = await this.prisma.numberReport.findUnique({
+            where: { id: reportId },
+        });
+
+        if (!report) {
+            throw new NotFoundException('Bunday shikoyat topilmadi.');
+        }
+
+        const fraudRecord = await this.prisma.fraudNumber.findUnique({
+            where: { id: report.phoneNumberId },
+        });
+
+        // Shikoyatni o'chirish
+        await this.prisma.numberReport.delete({
+            where: { id: reportId },
+        });
+
+        // Agar tegishli raqam mavjud bo'lsa, statistikasini qayta hisoblash
+        if (fraudRecord) {
+            const remainingReports = Math.max(0, fraudRecord.reportsCount - 1);
+            const newScore = fraudRecord.isVerified ? 100 : Math.min(100, remainingReports * 15);
+
+            await this.prisma.fraudNumber.update({
+                where: { id: fraudRecord.id },
+                data: {
+                    reportsCount: remainingReports,
+                    riskScore: newScore,
+                },
+            });
+        }
+
+        return {
+            success: true,
+            message: 'Shikoyat muvaffaqiyatli o‘chirildi va ball qayta hisoblandi.',
         };
     }
 }
